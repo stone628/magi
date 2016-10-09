@@ -9,3 +9,15 @@ game server powered by luajit
 * make simple echo server/client
 * make session queue for message process
 * make sessions transfer from one session queue to another
+
+## Build Environment
+* minibian on Raspberry Pi 2
+  * install prerequisites
+   ```
+sudo apt-get install build-essentials luajit luarocks cmake
+   ```
+  * install dependent luarocks
+   ```
+sudo luarocks install luv
+   ```
+  
