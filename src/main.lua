@@ -91,12 +91,6 @@ local function setup_workers()
     local input = uv.new_pipe(false)
     local worker_id = i
 
-    workers[i] = {
-      id = i,
-      pipe = pipe,
-      count = 0,
-    }
-
     local handle, pid = uv.spawn(
       lua_path,
       {
@@ -108,7 +102,17 @@ local function setup_workers()
       end
     )
 
-    if pid ~= nil then
+    workers[i] = {
+      id = i,
+      pipe = pipe,
+      count = 0,
+      handle = handle,
+    }
+
+    if pid == nil then
+      -- spawn fail
+      uv.close(pipe)
+    else
       -- spawn success
       uv.write(input, worker_impl)
     end
@@ -162,6 +166,24 @@ if uv.tcp_bind(server, "0.0.0.0", 0) then
 else
   uv.stop()
 end
+
+p("install sigint handler")
+local sigint = uv.new_signal()
+
+uv.signal_start(sigint, "sigint",
+  function(signal)
+    p("signal handler with", signal, ", stopping uv")
+
+    for i, worker in ipairs(workers) do
+      if worker.handle ~= nil then
+        p("sending sigterm to", worker)
+        uv.process_kill(worker.handle, "sigterm")
+      end
+    end
+
+    uv.stop();
+  end
+)
 
 p("start event loop")
 uv.run()
