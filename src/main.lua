@@ -1,7 +1,7 @@
 local uv = require('luv')
+local logger = require('logger')
 
-local pp = require('utils').prettyPrint
-local p = function(...) pp("[MAIN]", ...) end
+logger.prefix = "[MAIN]"
 
 local shutdown_workers = false
 local workers = {}
@@ -10,19 +10,18 @@ local worker_impl = string.dump(
   function(...)
     local worker_id = tonumber(arg[1])
     local uv = require('luv')
+    local logger = require('logger')
 
-    local pp = require('utils').prettyPrint
-    local W = string.format("[WORKER%02d]", worker_id)
-    local p = function(...) pp(W, ...) end
+    logger.prefix = string.format("[WORKER%02d]", worker_id)
 
     local conn_count = 0
 
-    p("starting new worker", worker_id, "option", arg)
+    logger.info("starting new worker", worker_id, "option", arg)
 
     local queue = uv.new_pipe(true)
 
     local function on_client(err, data)
-      p("on_client enter", { err = err, data = data })
+      logger.info("on_client enter", { err = err, data = data })
 
       if err then
         return
@@ -35,7 +34,7 @@ local worker_impl = string.dump(
           local from = uv.tcp_getsockname(client)
           local to = uv.tcp_getpeername(client)
 
-          p("on_client accepted", client, from, to)
+          logger.info("on_client accepted", client, from, to)
           uv.write(client,
             string.format("BYE connection #%d from %s:%d to %s:%d in worker %d!\n",
               conn_count, from.ip, from.port, to.ip, to.port, worker_id
@@ -43,19 +42,19 @@ local worker_impl = string.dump(
           )
           uv.shutdown(client,
             function()
-              p("on_client closing", client, from, to)
+              logger.info("on_client closing", client, from, to)
               uv.close(client)
             end
           )
           conn_count = conn_count + 1
         else
-          p("on_client accept fail", client)
+          logger.info("on_client accept fail", client)
           uv.close(client)
         end
       elseif data then
-        p("on_client data", data)
+        logger.info("on_client data", data)
       else
-        p("on_client detect end on queue")
+        logger.info("on_client detect end on queue")
         uv.stop()
       end
     end
@@ -74,7 +73,7 @@ local worker_impl = string.dump(
 local setup_worker
 
 local function on_worker_close(worker_id, exit_status, term_signal)
-  p("on_worker_close", { worker_id = worker_id, exit_status = exit_status, term_signal = term_signal })
+  logger.info("on_worker_close", { worker_id = worker_id, exit_status = exit_status, term_signal = term_signal })
 
   local worker = workers[worker_id]
 
@@ -96,7 +95,7 @@ local function on_worker_close(worker_id, exit_status, term_signal)
     end
 
     if worker_count == 0 then
-      p("all workers closed")
+      logger.info("all workers closed")
       uv.stop()
     end
   else
@@ -110,7 +109,7 @@ local function on_worker_close(worker_id, exit_status, term_signal)
       end
     )
 
-    p("respawn worker", worker_id, "in 1sec")
+    logger.info("respawn worker", worker_id, "in 1sec")
   end
 end
 
@@ -138,14 +137,14 @@ function setup_worker(lua_path, worker_id)
   if pid == nil then
     -- spawn fail
     uv.close(pipe)
-    p("worker spawn fail", worker)
+    logger.info("worker spawn fail", worker)
   else
     -- spawn success
     worker.handle = handle
     worker.pid = pid
     worker.pipe = pipe
     uv.write(input, worker_impl)
-    p("worker spawn success", worker)
+    logger.info("worker spawn success", worker)
   end
 
   uv.shutdown(input)
@@ -155,14 +154,14 @@ local function setup_workers()
   local lua_path = uv.exepath()
   local cpu_info = uv.cpu_info()
 
-  p("lua_path", lua_path)
+  logger.info("lua_path", lua_path)
 
   for i = 1, #cpu_info do
     setup_worker(lua_path, i)
   end
 end
 
-p("setting up workers")
+logger.info("setting up workers")
 setup_workers()
 
 local server = uv.new_tcp()
@@ -189,44 +188,45 @@ local function on_connect(err)
 
   local worker = workers[worker_counts[1].id]
 
-  p("worker counts", worker_counts, "selected", worker)
+  logger.info("worker counts", worker_counts, "selected", worker)
 
   if uv.write2(worker.pipe, "123", client) then
     worker.count = worker.count + 1
   else
-    p(W, "failed to send client over pipe")
+    logger.info(W, "failed to send client over pipe")
     uv.shutdown(client)
     uv.close(client)
   end 
 end
 
-p("setting up server socket", server)
+logger.info("setting up server socket", server)
+
 if uv.tcp_bind(server, "0.0.0.0", 0) then
-  p("server socket bound, listening...", server, uv.tcp_getsockname(server))
+  logger.info("server socket bound, listening...", server, uv.tcp_getsockname(server))
   uv.listen(server, 128, on_connect)
 else
   uv.stop()
 end
 
-p("installing sigint handler")
+logger.info("installing sigint handler")
 local sigint = uv.new_signal()
 
 uv.signal_start(sigint, "sigint",
   function(signal)
-    p("signal handler with", signal, ", shutdown workers...")
+    logger.info("signal handler with", signal, ", shutdown workers...")
 
     shutdown_workers = true
 
     for i, worker in ipairs(workers) do
       if worker.handle ~= nil then
-        p("sending sigterm to", worker)
+        logger.info("sending sigterm to", worker)
         uv.process_kill(worker.handle, "sigterm")
       end
     end
   end
 )
 
-p("start event loop")
+logger.info("start event loop")
 uv.run()
-p("done event loop")
+logger.info("done event loop")
 uv.loop_close()
