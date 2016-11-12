@@ -1,7 +1,14 @@
 local uv = require('luv')
+local config = require('config')
 local logger = require('logger')
+local file_logger = logger.new_file_sink(
+  config.LOG_PATH, "MAIN", config.LOG_FLUSH_INTERVAL)
 
 logger.prefix = "[MAIN]"
+logger.sink = function(...)
+  logger.console_sink(...)
+  file_logger(...)
+end
 
 local shutdown_workers = false
 local workers = {}
@@ -10,9 +17,17 @@ local worker_impl = string.dump(
   function(...)
     local worker_id = tonumber(arg[1])
     local uv = require('luv')
+    local config = require('config')
     local logger = require('logger')
+    local file_logger = logger.new_file_sink(
+      config.LOG_PATH, string.format("WORK%02d", worker_id),
+      config.LOG_FLUSH_INTERVAL)
 
     logger.prefix = string.format("[WORKER%02d]", worker_id)
+    logger.sink = function(...)
+      logger.console_sink(...)
+      file_logger(...)
+    end
 
     local conn_count = 0
 
