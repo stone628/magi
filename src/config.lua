@@ -5,14 +5,15 @@ local config = {}
 config.LOG_PATH = "./logs"
 config.LOG_FLUSH_INTERVAL = 1000
 
-uv.fs_mkdir(config.LOG_PATH, "644",
+uv.fs_mkdir(config.LOG_PATH, "755",
   function(err)
     if err then
       local errstr = tostring(err)
 
       if string.find(errstr, "EEXIST") ~= 1 then
         error(
-          string.format("failed to prepare log path \"%s\", error:\"%s\"",
+          string.format(
+            "failed to prepare log path \"%s\", error:\"%s\"",
             config.LOG_PATH, errstr
           )
         )

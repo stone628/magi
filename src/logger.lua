@@ -35,7 +35,7 @@ for i, v in ipairs(modes) do
   logger[v.name] = function(...)
     if logger.sink == nil or i < levels[logger.level] then return end
 
-    local msg = pretty_string(...)
+    local msg = utils.pretty_string(...)
     local info = debug.getinfo(2, "Sl")
 
     logger.sink(

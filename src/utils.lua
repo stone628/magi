@@ -150,7 +150,7 @@ function print(...)
 end
 
 -- A nice global data dumper
-function utils.prettyPrint(...)
+function utils.pretty_string(...)
   local n = select('#', ...)
   local arguments = { ... }
 
@@ -158,7 +158,7 @@ function utils.prettyPrint(...)
     arguments[i] = utils.dump(arguments[i])
   end
 
-  print(table.concat(arguments, "\t"))
+  return table.concat(arguments, "\t")
 end
 
 return utils
