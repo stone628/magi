@@ -11,23 +11,23 @@ game server powered by luajit
 * make sessions transfer from one session queue to another
 
 ## Build Environment
-* minibian on Raspberry Pi
-  * install prerequisites
+### minibian on Raspberry Pi
+#### install prerequisites
    ```
 $ sudo apt-get install build-essentials luajit luarocks cmake
    ```
-  * install dependent luarocks
+#### install dependent luarocks
    ```
 $ sudo luarocks install luv
    ```
-  * install docker on rpi - from https://github.com/umiddelb/armhf/wiki/Get-Docker-up-and-running-on-the-RaspberryPi-(ARMv6)-in-four-steps-(Wheezy)
+#### install docker on rpi - from https://github.com/umiddelb/armhf/wiki/Get-Docker-up-and-running-on-the-RaspberryPi-(ARMv6)-in-four-steps-(Wheezy)
    ```
 $ curl -ks https://packagecloud.io/install/repositories/Hypriot/Schatzkiste/script.deb.sh | sudo bash
 $ sudo apt-get install docker-hypriot=1.10.3-1
 $ sudo usermod -aG docker ${USERNAME}
 $ sudo systemctl enable docker.service
    ```
-  * docker recipes - redis
+#### docker recipes - redis
    ```
 $ docker run -d -p 6379:6379 hypriot/rpi-redis
    ```
