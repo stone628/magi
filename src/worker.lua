@@ -1,6 +1,7 @@
 local worker_id = tonumber(arg[1])
 local uv = require('luv')
 local config = require('config')
+local msgpack = require('MessagePack')
 local logger = require('logger')
 local file_logger = logger.new_file_sink(
   config.LOG_PATH, string.format("WORK%02d", worker_id),
@@ -13,6 +14,13 @@ logger.sink = function(...)
 end
 
 local conn_count = 0
+
+local function worker_stat()
+  return {
+    type = "worker_stat",
+    conn_count = conn_count,
+  }
+end
 
 logger.info("starting new worker", worker_id, "option", arg)
 
@@ -51,7 +59,9 @@ local function on_client(err, data)
           end
         )
         conn_count = conn_count + 1
-        uv.write(server_pipe, conn_count)
+        uv.write(server_pipe,
+          msgpack.pack(worker_stat())
+        )
       else
         logger.error("on_client tcp accept fail", client)
         uv.close(client)
@@ -92,7 +102,7 @@ repeat
   uv.read_start(queue, on_client)
   uv.run()
   logger.info("end event loop")
-until false
+until true
 
 uv.close(queue)
 uv.close(server_pipe)

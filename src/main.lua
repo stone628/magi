@@ -1,5 +1,6 @@
 local uv = require('luv')
 local config = require('config')
+local msgpack = require('MessagePack')
 local logger = require('logger')
 local utils = require('utils')
 local file_logger = logger.new_file_sink(
@@ -94,7 +95,16 @@ local function on_worker_read(worker, err, data)
   end
   
   if data then
-  	logger.info(string.format("on_worker_read[WORKER%d] received data", worker.id), data)
+    local unpacked = msgpack.unpack(data)
+
+  	logger.info(string.format("on_worker_read[WORKER%d] received data", worker.id), unpacked)
+
+    if unpacked.type == "worker_stat" then
+      worker.conn_count = unpacked.conn_count
+    else
+      logger.error(string.format("on_worker_read[WORKER%d] type not handled:", worker.id), unpacked.type)
+    end
+
     return
   end
 
@@ -118,7 +128,7 @@ function setup_worker(lua_path, worker_id)
   )
   local worker = {
     id = worker_id,
-    count = 0,
+    conn_count = 0,
   }
 
   workers[worker_id] = worker
@@ -172,7 +182,7 @@ local function on_connect(err)
   for i, worker in ipairs(workers) do
     worker_counts[i] = {
       id = i,
-      count = worker.count,
+      count = worker.conn_count,
     }
   end
 
@@ -187,7 +197,6 @@ local function on_connect(err)
   logger.info("worker counts", worker_counts, "selected", worker)
 
   if uv.write2(worker.pipe_to, "new_client", client) then
-    worker.count = worker.count + 1
     uv.write(worker.pipe_to, "456")
   else
     logger.error(worker, "failed to send client over pipe")
