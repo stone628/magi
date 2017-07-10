@@ -1,6 +1,7 @@
 local uv = require('luv')
 local config = require('config')
 local logger = require('logger')
+local utils = require('utils')
 local file_logger = logger.new_file_sink(
   config.LOG_PATH, "MAIN", config.LOG_FLUSH_INTERVAL)
 
@@ -21,9 +22,14 @@ local function on_worker_close(worker_id, exit_status, term_signal)
 
   local worker = workers[worker_id]
 
-  if worker.pipe ~= nil then
-    uv.close(worker.pipe)
-    worker.pipe = nil
+  if worker.pipe_to ~= nil then
+    uv.close(worker.pipe_to)
+    worker.pipe_to = nil
+  end
+
+  if worker.pipe_from ~= nil then
+    uv.close(worker.pipe_from)
+    worker.pipe_from = nil
   end
 
   worker.pid = nil
@@ -57,14 +63,53 @@ local function on_worker_close(worker_id, exit_status, term_signal)
   end
 end
 
+local function on_worker_read(worker, err, data)
+  if err then
+  	logger.error(string.format("on_worker_read[WORKER%d] error", worker.id), err)
+  	return
+  end
+
+  if uv.pipe_pending_count(worker.pipe_from) > 0 then
+    local pending_type = uv.pipe_pending_type(worker.pipe_from)
+
+    if pending_type == "tcp" then
+      local client = uv.new_tcp()
+
+      if uv.accept(worker.pipe_from) then
+        local from = uv.tcp_getsockname(client)
+        local to = uv.tcp_getpeername(client)
+  
+        logger.info("on_client accepted", client, from, to)
+
+      else
+        logger.error(string.format("on_worker_read[WORKER%d] tcp accept fail", worker.id), client)
+        uv.close(client)
+      end
+    else
+      logger.error(string.format("on_worker_read[WORKER%d] cannot process pending_type", worker.id), pending_type)
+      uv.stop()
+    end
+
+    return
+  end
+  
+  if data then
+  	logger.info(string.format("on_worker_read[WORKER%d] received data", worker.id), data)
+    return
+  end
+
+	logger.error(string.format("on_worker_read[WORKER%d] pipe closed ??", worker.id))
+end
+
 function setup_worker(lua_path, worker_id)
-  local pipe = uv.new_pipe(true)
+  local pipe_to = uv.new_pipe(true)
+  local pipe_from = uv.new_pipe(false)
   local input = uv.new_pipe(false)
   local handle, pid = uv.spawn(
     lua_path,
     {
       args = { "-", worker_id, "option2", },
-      stdio = { input, 1, 2, pipe },
+      stdio = { input, 1, 2, pipe_to, pipe_from },
       env = { string.format("WORKER_ID=%d", worker_id) },
     }, 
     function(exit_status, term_signal)
@@ -80,14 +125,21 @@ function setup_worker(lua_path, worker_id)
 
   if pid == nil then
     -- spawn fail
-    uv.close(pipe)
-    logger.info("worker spawn fail", worker)
+    uv.close(pipe_to)
+    uv.close(pipe_from)
+    logger.error("worker spawn fail", worker)
   else
     -- spawn success
     worker.handle = handle
     worker.pid = pid
-    worker.pipe = pipe
+    worker.pipe_to = pipe_to
+    worker.pipe_from = pipe_from
     uv.write(input, worker_impl)
+    uv.read_start(worker.pipe_from,
+      function(err, data)
+        on_worker_read(worker, err, data)
+      end
+    )
     logger.info("worker spawn success", worker)
   end
 
@@ -134,22 +186,14 @@ local function on_connect(err)
 
   logger.info("worker counts", worker_counts, "selected", worker)
 
-  if uv.write2(worker.pipe, "123", client) then
+  if uv.write2(worker.pipe_to, "new_client", client) then
     worker.count = worker.count + 1
+    uv.write(worker.pipe_to, "456")
   else
-    logger.info(W, "failed to send client over pipe")
+    logger.error(worker, "failed to send client over pipe")
     uv.shutdown(client)
     uv.close(client)
   end 
-end
-
-logger.info("setting up server socket", server)
-
-if uv.tcp_bind(server, "0.0.0.0", 0) then
-  logger.info("server socket bound, listening...", server, uv.tcp_getsockname(server))
-  uv.listen(server, 128, on_connect)
-else
-  uv.stop()
 end
 
 logger.info("installing sigint handler")
@@ -166,6 +210,17 @@ uv.signal_start(sigint, "sigint",
         logger.info("sending sigterm to", worker)
         uv.process_kill(worker.handle, "sigterm")
       end
+    end
+  end
+)
+
+utils.setTimeout(0,
+  function()
+    logger.info("setting up server socket", server)
+    
+    if uv.tcp_bind(server, "0.0.0.0", config.SERVER_PORT) then
+      logger.info("server socket bound, listening...", server, uv.tcp_getsockname(server))
+      uv.listen(server, 128, on_connect)
     end
   end
 )

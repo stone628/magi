@@ -1,9 +1,12 @@
 local uv = require('luv')
-local config = {}
 
--- log related
-config.LOG_PATH = "./logs"
-config.LOG_FLUSH_INTERVAL = 1000
+local config = {
+  -- log related
+  LOG_PATH = "./logs",
+  LOG_FLUSH_INTERVAL = 1000,
+  
+  SERVER_PORT = 50000,
+}
 
 uv.fs_mkdir(config.LOG_PATH, "755",
   function(err)
