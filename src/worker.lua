@@ -1,8 +1,11 @@
-local worker_id = tonumber(arg[1])
 local uv = require('luv')
-local config = require('config')
 local msgpack = require('MessagePack')
+local uuid = require('uuid')
+
+local config = require('config')
 local logger = require('logger')
+
+local worker_id = tonumber(arg[1])
 local file_logger = logger.new_file_sink(
   config.LOG_PATH, string.format("WORK%02d", worker_id),
   config.LOG_FLUSH_INTERVAL)
@@ -14,9 +17,10 @@ logger.sink = function(...)
 end
 
 local conn_count = 0
+local sessions = {}
+
 local queue = uv.new_pipe(true)
 local server_pipe = uv.new_pipe(false)
-local connections = {}
 
 local function worker_stat()
   return {
@@ -25,28 +29,54 @@ local function worker_stat()
   }
 end
 
-local function on_client_read(conn, err, data)
-  if err then
-    logger.info("on_client_read", conn, "error", err)
-    return
-  end
+local function session_write(session, data)
+  uv.write(session.connection, data)
+end
+
+local function session_close(session)
+  conn_count = conn_count - 1
+  sessions[session.worker_session_id] = nil
+  uv.close(session.connection)
+  uv.write(server_pipe, msgpack.pack(worker_stat()))
+end
+
+local function on_client_read(session, err, data)
+  logger.info("on_client_read", session, { err = err, data = data })
+
+  if err then return end
 
   if data then
-    logger.info("on_client_read", conn, "received", data)
-    uv.write(conn, data)
+    logger.info("on_client_read received", data)
+    session_write(session, data)
     return
   end
+  
+  session_close(session)
+  logger.info("on_client_read disconnected", { conn_count = conn_count })
+end
 
-  conn_count = conn_count - 1
-  logger.info("on_client_read", conn, "disconnected, conn_count", conn_count)
+local function session_create(session_info, conn)
+  local new_session = {
+    session_id = session_info.session_id,
+    worker_session_id = uuid(),
+    connection = conn,
+  }
+
+  sessions[new_session.worker_session_id] = new_session
+  conn_count = conn_count + 1
+  uv.read_start(conn,
+    function(err, data)
+      on_client_read(new_session, err, data)
+    end
+  )
+  uv.write(server_pipe, msgpack.pack(worker_stat()))
+  return new_session
 end
 
 local function on_client(err, data)
   logger.info("on_client enter", { err = err, data = data })
 
-  if err then
-    return
-  end
+  if err then return end
 
   if uv.pipe_pending_count(queue) > 0 then 
     local pending_type = uv.pipe_pending_type(queue)
@@ -54,31 +84,24 @@ local function on_client(err, data)
     logger.info("on_client pending type", pending_type)
 
     if pending_type == "tcp" then
-      local client = uv.new_tcp()
+      local conn = uv.new_tcp()
 
-      if uv.accept(queue, client) then
-        local from = uv.tcp_getsockname(client)
-        local to = uv.tcp_getpeername(client)
-  
-        conn_count = conn_count + 1
-        logger.info("on_client accepted", client, from, to, "conn_count", conn_count)
+      if uv.accept(queue, conn) then
+        local from = uv.tcp_getsockname(conn)
+        local to = uv.tcp_getpeername(conn)
+        local new_session = session_create(msgpack.unpack(data), conn)
 
-        uv.read_start(client,
-          function(err, data)
-            on_client_read(client, err, data)
-          end
+        logger.info("on_client accepted", conn,
+          { from = from, to = to, conn_count = conn_count}
         )
-        uv.write(client,
+        session_write(new_session,
           string.format("Hello conn #%d from %s:%d to %s:%d in worker %d!\n",
             conn_count, from.ip, from.port, to.ip, to.port, worker_id
           )
         )
-        uv.write(server_pipe,
-          msgpack.pack(worker_stat())
-        )
       else
-        logger.error("on_client tcp accept fail", client)
-        uv.close(client)
+        logger.error("on_client tcp accept fail", conn)
+        uv.close(conn)
       end
     else
       logger.error("on_client cannot process pending_type", pending_type)
@@ -89,7 +112,7 @@ local function on_client(err, data)
   end
 
   if data then
-    logger.info("on_client data", data)
+    logger.info("on_client data", msgpack.unpack(data))
     return
   end
 

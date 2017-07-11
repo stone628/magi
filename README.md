@@ -18,7 +18,7 @@ $ sudo apt-get install build-essentials luajit luarocks cmake
    ```
 #### install dependent luarocks
    ```
-$ sudo luarocks install luv
+$ sudo luarocks install luv lua-messagepack
    ```
 #### install docker on rpi - from https://github.com/umiddelb/armhf/wiki/Get-Docker-up-and-running-on-the-RaspberryPi-(ARMv6)-in-four-steps-(Wheezy)
    ```

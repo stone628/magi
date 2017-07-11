@@ -1,8 +1,11 @@
 local uv = require('luv')
-local config = require('config')
 local msgpack = require('MessagePack')
+local uuid = require('uuid')
+
 local logger = require('logger')
+local config = require('config')
 local utils = require('utils')
+
 local file_logger = logger.new_file_sink(
   config.LOG_PATH, "MAIN", config.LOG_FLUSH_INTERVAL)
 
@@ -167,6 +170,12 @@ local function setup_workers()
   end
 end
 
+local function new_session_info()
+  return {
+    session_id = uuid(),
+  }
+end
+
 logger.info("setting up workers")
 setup_workers()
 
@@ -196,9 +205,7 @@ local function on_connect(err)
 
   logger.info("worker counts", worker_counts, "selected", worker)
 
-  if uv.write2(worker.pipe_to, "new_client", client) then
-    uv.write(worker.pipe_to, "456")
-  else
+  if not uv.write2(worker.pipe_to, msgpack.pack(new_session_info()), client) then
     logger.error(worker, "failed to send client over pipe")
     uv.shutdown(client)
     uv.close(client)
