@@ -14,6 +14,9 @@ logger.sink = function(...)
 end
 
 local conn_count = 0
+local queue = uv.new_pipe(true)
+local server_pipe = uv.new_pipe(false)
+local connections = {}
 
 local function worker_stat()
   return {
@@ -22,10 +25,21 @@ local function worker_stat()
   }
 end
 
-logger.info("starting new worker", worker_id, "option", arg)
+local function on_client_read(conn, err, data)
+  if err then
+    logger.info("on_client_read", conn, "error", err)
+    return
+  end
 
-local queue = uv.new_pipe(true)
-local server_pipe = uv.new_pipe(false)
+  if data then
+    logger.info("on_client_read", conn, "received", data)
+    uv.write(conn, data)
+    return
+  end
+
+  conn_count = conn_count - 1
+  logger.info("on_client_read", conn, "disconnected, conn_count", conn_count)
+end
 
 local function on_client(err, data)
   logger.info("on_client enter", { err = err, data = data })
@@ -46,19 +60,19 @@ local function on_client(err, data)
         local from = uv.tcp_getsockname(client)
         local to = uv.tcp_getpeername(client)
   
-        logger.info("on_client accepted", client, from, to)
+        conn_count = conn_count + 1
+        logger.info("on_client accepted", client, from, to, "conn_count", conn_count)
+
+        uv.read_start(client,
+          function(err, data)
+            on_client_read(client, err, data)
+          end
+        )
         uv.write(client,
-          string.format("BYE connection #%d from %s:%d to %s:%d in worker %d!\n",
+          string.format("Hello conn #%d from %s:%d to %s:%d in worker %d!\n",
             conn_count, from.ip, from.port, to.ip, to.port, worker_id
           )
         )
-        uv.shutdown(client,
-          function()
-            logger.info("on_client closing", client, from, to)
-            uv.close(client)
-          end
-        )
-        conn_count = conn_count + 1
         uv.write(server_pipe,
           msgpack.pack(worker_stat())
         )
@@ -82,6 +96,8 @@ local function on_client(err, data)
   logger.info("on_client detect end on queue")
   uv.stop()
 end
+
+logger.info("starting new worker", worker_id, "option", arg)
 
 repeat
   logger.info("opening server_pipe")
