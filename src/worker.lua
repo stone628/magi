@@ -8,10 +8,10 @@ local content = require('content')
 
 local worker_id = tonumber(arg[1])
 local file_logger = logger.new_file_sink(
-  config.LOG_PATH, string.format("WORK%02d", worker_id),
+  config.LOG_PATH, string.format("W%03d", worker_id),
   config.LOG_FLUSH_INTERVAL)
 
-logger.prefix = string.format("[WORKER%02d]", worker_id)
+logger.prefix = string.format("W%03d", worker_id)
 logger.sink = function(...)
   logger.console_sink(...)
   file_logger(...)
@@ -28,6 +28,13 @@ local function worker_stat()
     type = "worker_stat",
     conn_count = conn_count,
   }
+end
+
+local function session_error(session, tag, err)
+  logger.error(
+    string.format("%s:session(%s)", tag, session.session_id),
+    err
+  )
 end
 
 local function session_write(session, data)
@@ -47,7 +54,12 @@ end
 local function session_close(session)
   if not session.valid then return end
   
-  if session.on_close then session.on_close(session) end
+  if session.on_close then
+    xpcall(
+      function() session.on_close(session) end,
+      function(err) session_error(session, "on_close", err) end
+    )
+  end
 
   conn_count = conn_count - 1
   sessions[session.worker_session_id] = nil
@@ -58,7 +70,12 @@ end
 local function session_transfer(session)
   if not session.valid then return end
 
-  if session.on_transfer then session.on_transfer(session) end
+  if session.on_transfer then
+    xpcall(
+      function() session.on_transfer(session) end,
+      function(err) session_error(session, "on_transfer", err) end
+    )
+  end
 
   -- TODO(stone628): prepare for transferring
   session.valid = false
@@ -81,11 +98,16 @@ local function session_create(session_info, conn)
   conn_count = conn_count + 1
   content(session)
 
-  if session.on_connect then session.on_connect(session) end
+  if session.on_connect then
+    xpcall(
+      function() session.on_connect(session) end,
+      function(err) session_error(session, "on_connect", err) end
+    )
+  end
 
   uv.read_start(conn,
     function(err, data)
-      logger.info("session callback entered",
+      logger.debug("session callback entered",
         {
           session_id = session.session_id,
           worker_session_id = session.worker_session_id,
@@ -99,7 +121,10 @@ local function session_create(session_info, conn)
     
       if data then
         if session.on_data then
-          session.on_data(session, data)
+          xpcall(
+            function() session.on_data(session, data) end,
+            function(err) session_error(session, "on_data", err) end
+          )
         end
 
         return
@@ -115,14 +140,14 @@ local function session_create(session_info, conn)
 end
 
 local function on_client(err, data)
-  logger.info("on_client enter", { err = err, data = data })
+  logger.debug("on_client enter", { err = err, data = data })
 
   if err then return end
 
   if uv.pipe_pending_count(queue) > 0 then 
     local pending_type = uv.pipe_pending_type(queue)
 
-    logger.info("on_client pending type", pending_type)
+    logger.debug("on_client pending type", pending_type)
 
     if pending_type == "tcp" then
       local conn = uv.new_tcp()
@@ -156,17 +181,17 @@ local function on_client(err, data)
   uv.stop()
 end
 
-logger.info("starting new worker", worker_id, "option", arg)
+logger.info("starting new worker")
 
 repeat
-  logger.info("opening server_pipe")
+  logger.debug("opening server_pipe")
 
   if not uv.pipe_open(server_pipe, 4) then
     logger.error("failed to open server_pipe")
     break
   end
   
-  logger.info("opening client acceptor")
+  logger.debug("opening client acceptor")
 
   if not uv.pipe_open(queue, 3) then
     logger.error("failed to open client acceptor")

@@ -6,12 +6,12 @@ logger.level = "info"
 logger.prefix = ""
 
 local modes = {
-  { name = "trace", color = "blue", },
-  { name = "debug", color = "cyan", },
-  { name = "info", color = "green", },
-  { name = "warn", color = "yellow", },
-  { name = "error", color = "red", },
-  { name = "fatal", color = "magenta", },
+  { name = "trace", color = "blue", short = "TRACE", },
+  { name = "debug", color = "cyan", short = "DEBUG", },
+  { name = "info", color = "green", short = "INFO ", },
+  { name = "warn", color = "yellow", short = "WARN ", },
+  { name = "error", color = "red", short = "ERROR", },
+  { name = "fatal", color = "magenta", short = "FATAL" },
 }
 
 local levels = {}
@@ -29,21 +29,22 @@ end
 
 for i, v in ipairs(modes) do
   local header_color = v.color
-  local upper_name = v.name:upper()
+  local upper_name = v.short
 
   levels[v.name] = i
-  logger[v.name] = function(...)
+  logger[v.name] = function(msg, ...)
     if logger.sink == nil or i < levels[logger.level] then return end
 
-    local msg = utils.pretty_string(...)
+    local rest_msg = utils.pretty_string(...)
     local info = debug.getinfo(2, "Sl")
 
     logger.sink(
       utils.colorize(header_color,
-        string.format("[%-6s%s %s:%s]",
-          upper_name, os.date("%H:%M:%S"), info.short_src, info.currentline
+        string.format("[%s %s %s@%s:%s]%s",
+          upper_name, os.date("%H:%M:%S"), logger.prefix,
+          info.short_src, info.currentline, msg
         )
-      ) .. string.format(" %s%s\n", logger.prefix, msg)
+      ) .. string.format("\t%s\n", rest_msg)
     )
   end
 end
