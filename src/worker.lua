@@ -4,6 +4,7 @@ local uuid = require('uuid')
 
 local config = require('config')
 local logger = require('logger')
+local content = require('content')
 
 local worker_id = tonumber(arg[1])
 local file_logger = logger.new_file_sink(
@@ -30,45 +31,85 @@ local function worker_stat()
 end
 
 local function session_write(session, data)
+  if not session.valid then return end
+
   uv.write(session.connection, data)
 end
 
+local function session_from(session)
+  return uv.tcp_getsockname(session.connection)
+end
+
+local function session_to(session)
+  return uv.tcp_getpeername(session.connection)
+end
+
 local function session_close(session)
+  if not session.valid then return end
+  
+  if session.on_close then session.on_close(session) end
+
   conn_count = conn_count - 1
   sessions[session.worker_session_id] = nil
   uv.close(session.connection)
   uv.write(server_pipe, msgpack.pack(worker_stat()))
 end
 
-local function on_client_read(session, err, data)
-  logger.info("on_client_read", session, { err = err, data = data })
+local function session_transfer(session)
+  if not session.valid then return end
 
-  if err then return end
+  if session.on_transfer then session.on_transfer(session) end
 
-  if data then
-    logger.info("on_client_read received", data)
-    session_write(session, data)
-    return
-  end
-  
-  session_close(session)
-  logger.info("on_client_read disconnected", { conn_count = conn_count })
+  -- TODO(stone628): prepare for transferring
+  session.valid = false
 end
 
 local function session_create(session_info, conn)
-  local new_session = {
+  local session = {
     session_id = session_info.session_id,
     worker_session_id = uuid(),
     connection = conn,
+    valid = true,
+    write = session_write,
+    close = session_close,
+    transfer = session_transfer,
+    from = session_from,
+    to = session_to,
   }
 
-  sessions[new_session.worker_session_id] = new_session
+  sessions[session.worker_session_id] = session
   conn_count = conn_count + 1
+  content(session)
+
+  if session.on_connect then session.on_connect(session) end
+
   uv.read_start(conn,
     function(err, data)
-      on_client_read(new_session, err, data)
+      logger.info("session callback entered",
+        {
+          session_id = session.session_id,
+          worker_session_id = session.worker_session_id,
+          valid = session.valid,
+          err = err,
+          data = data
+        }
+      )
+    
+      if err then return end
+    
+      if data then
+        if session.on_data then
+          session.on_data(session, data)
+        end
+
+        return
+      end
+      
+      session_close(session)
+      logger.info("session callback disconnected", { conn_count = conn_count })
     end
   )
+
   uv.write(server_pipe, msgpack.pack(worker_stat()))
   return new_session
 end
@@ -93,11 +134,6 @@ local function on_client(err, data)
 
         logger.info("on_client accepted", conn,
           { from = from, to = to, conn_count = conn_count}
-        )
-        session_write(new_session,
-          string.format("Hello conn #%d from %s:%d to %s:%d in worker %d!\n",
-            conn_count, from.ip, from.port, to.ip, to.port, worker_id
-          )
         )
       else
         logger.error("on_client tcp accept fail", conn)
