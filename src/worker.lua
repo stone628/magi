@@ -21,7 +21,7 @@ local conn_count = 0
 local sessions = {}
 
 local queue = uv.new_pipe(true)
-local server_pipe = uv.new_pipe(false)
+local server_pipe = uv.new_pipe(true)
 
 local function worker_stat()
   return {
@@ -32,8 +32,10 @@ end
 
 local function session_error(session, tag, err)
   logger.error(
-    string.format("%s:session(%s)", tag, session.session_id),
-    err
+    debug.traceback(
+      string.format("%s:session(%s)", tag, session.session_id),
+      3
+    )
   )
 end
 
@@ -77,8 +79,23 @@ local function session_transfer(session)
     )
   end
 
-  -- TODO(stone628): prepare for transferring
+  local conn = session.connection
+  local trans_data = {
+    session_id = session.session_id,
+  }
+  uv.read_stop(conn)
+
+  if not uv.write2(server_pipe, msgpack.pack(trans_data), conn) then
+    logger.error("failed to transfer client",
+      { session_id = session.session_id, }
+    )
+    uv.shutdown(conn)
+    uv.close(conn)
+  end
+
   session.valid = false
+  sessions[session.worker_session_id] = nil
+  uv.write(server_pipe, msgpack.pack(worker_stat()))
 end
 
 local function session_create(session_info, conn)

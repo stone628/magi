@@ -12,7 +12,12 @@ end
 
 local function on_data(session, data)
   -- echo content
-  session:write(data)
+  if string.find(data, "transfer") == 1 then
+    session:write("trying transfer\n")
+    session:transfer()
+  else
+    session:write(data)
+  end
 end
 
 local function on_close(session)

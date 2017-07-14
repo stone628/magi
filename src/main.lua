@@ -21,6 +21,25 @@ local workers = {}
 local worker_impl = string.dump(loadfile("worker.lua"))
 local setup_worker
 
+local function choose_worker()
+  local worker_counts = {}
+
+  for i, worker in ipairs(workers) do
+    worker_counts[i] = {
+      id = i,
+      count = worker.conn_count,
+    }
+  end
+
+  table.sort(worker_counts,
+    function(lhs, rhs)
+      return lhs.count < rhs.count
+    end
+  )
+
+  return workers[worker_counts[1].id]
+end
+
 local function on_worker_close(worker_id, exit_status, term_signal)
   logger.info("on_worker_close", { worker_id = worker_id, exit_status = exit_status, term_signal = term_signal })
 
@@ -79,11 +98,23 @@ local function on_worker_read(worker, err, data)
     if pending_type == "tcp" then
       local client = uv.new_tcp()
 
-      if uv.accept(worker.pipe_from) then
+      if uv.accept(worker.pipe_from, client) then
         local from = uv.tcp_getsockname(client)
         local to = uv.tcp_getpeername(client)
+        local worker = choose_worker()
   
-        logger.info("on_client accepted", client, from, to)
+        logger.info("on_worker_read accepted", client, from, to)
+        logger.info("on_worker_read transferring to",
+          { worker_pid = worker.pid, worker_id = worker.id }
+        )
+        
+        if not uv.write2(worker.pipe_to, data, client) then
+          logger.error("on_worker_read failed to send client to",
+            worker, msgpack.unpack(data)
+          )
+          uv.shutdown(client)
+          uv.close(client)
+        end 
       else
         logger.error(string.format("on_worker_read[W%03d] tcp accept fail", worker.id), client)
         uv.close(client)
@@ -119,7 +150,7 @@ end
 
 function setup_worker(lua_path, worker_id)
   local pipe_to = uv.new_pipe(true)
-  local pipe_from = uv.new_pipe(false)
+  local pipe_from = uv.new_pipe(true)
   local input = uv.new_pipe(false)
   local handle, pid = uv.spawn(
     lua_path,
@@ -183,33 +214,20 @@ logger.info("setting up workers")
 setup_workers()
 
 local server = uv.new_tcp()
+
 local function on_connect(err)
   assert(not err, err)
 
   local client = uv.new_tcp()
-  local worker_counts = {}
+  local worker = choose_worker()
+  local session_info = new_session_info()
 
   uv.accept(server, client)
 
-  for i, worker in ipairs(workers) do
-    worker_counts[i] = {
-      id = i,
-      count = worker.conn_count,
-    }
-  end
+  logger.info("on_connect transferring to chosen worker", worker, session_info)
 
-  table.sort(worker_counts,
-    function(lhs, rhs)
-      return lhs.count < rhs.count
-    end
-  )
-
-  local worker = workers[worker_counts[1].id]
-
-  logger.debug("worker counts", worker_counts, "selected", worker)
-
-  if not uv.write2(worker.pipe_to, msgpack.pack(new_session_info()), client) then
-    logger.error(worker, "failed to send client over pipe")
+  if not uv.write2(worker.pipe_to, msgpack.pack(session_info), client) then
+    logger.error("on_connect failed to send client over pipe to", worker)
     uv.shutdown(client)
     uv.close(client)
   end 
