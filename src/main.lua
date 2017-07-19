@@ -240,34 +240,42 @@ uv.signal_start(sigint, "sigint",
   function(signal)
     logger.info("signal handler with", signal, ", shutdown workers...")
 
+    local shutdown_msg = msgpack.pack(
+      { type = "shutdown", }
+    )
+
     shutdown_workers = true
 
     for i, worker in ipairs(workers) do
       if worker.handle ~= nil then
         logger.debug("sending sigterm to", worker)
         worker.shutting_down = true
-        uv.process_kill(worker.handle, "sigterm")
+        uv.write(worker.pipe_to, shutdown_msg)
       end
     end
   end
 )
 
-utils.setTimeout(0,
-  function()
-    logger.debug("setting up server socket", server)
-    
-    if uv.tcp_bind(server, "0.0.0.0", config.SERVER_PORT) then
-      logger.info("server socket bound, listening...", server, uv.tcp_getsockname(server))
-      if not uv.listen(server, 128, on_connect) then
-        logger.error("failed to listen server socket", config.SERVER_PORT)
-      end
+do
+  local t = uv.new_timer()
 
-      return
-    else
-      logger.error("failed to bind server socket", config.SERVER_PORT)
+  uv.timer_start(t, 0, 0,
+    function()
+      logger.debug("setting up server socket", server)
+      
+      if uv.tcp_bind(server, "0.0.0.0", config.SERVER_PORT) then
+        logger.info("server socket bound, listening...", server, uv.tcp_getsockname(server))
+        if not uv.listen(server, 128, on_connect) then
+          logger.error("failed to listen server socket", config.SERVER_PORT)
+        end
+  
+        return
+      else
+        logger.error("failed to bind server socket", config.SERVER_PORT)
+      end
     end
-  end
-)
+  )
+end
 
 logger.info("start event loop")
 uv.run()

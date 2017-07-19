@@ -1,4 +1,18 @@
-local function on_connect(session)
+local logger
+local wid
+
+local function on_content_startup(worker_id, worker_logger)
+  wid = worker_id
+  logger = worker_logger
+
+  logger.info("on_content_startup", { worker_id = wid })
+end
+
+local function on_content_shutdown()
+  logger.info("on_content_shutdown", { worker_id = wid })
+end
+
+local function on_session_connect(session)
   local from = session:from()
   local to = session:to()
 
@@ -10,7 +24,7 @@ local function on_connect(session)
   )
 end
 
-local function on_data(session, data)
+local function on_session_data(session, data)
   -- echo content
   if string.find(data, "transfer") == 1 then
     session:write("trying transfer\n")
@@ -20,15 +34,21 @@ local function on_data(session, data)
   end
 end
 
-local function on_close(session)
+local function on_session_close(session)
 end
 
-local function on_transfer(session)
+local function on_session_transfer(session)
 end
 
-return function(session)
-  session.on_connect = on_connect
-  session.on_data = on_data
-  session.on_close = on_close
-  session.on_transfer = on_transfer
-end
+return {
+  register_content_handlers = function(content)
+    content.on_startup = on_content_startup
+    content.on_shutdown = on_content_shutdown
+  end,
+  register_session_handlers = function(session)
+    session.on_connect = on_session_connect
+    session.on_data = on_session_data
+    session.on_close = on_session_close
+    session.on_transfer = on_session_transfer
+  end,
+}

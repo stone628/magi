@@ -20,8 +20,8 @@ end
 local conn_count = 0
 local sessions = {}
 
-local queue = uv.new_pipe(true)
-local server_pipe = uv.new_pipe(true)
+local from_server_pipe = uv.new_pipe(true)
+local to_server_pipe = uv.new_pipe(true)
 
 local function worker_stat()
   return {
@@ -66,7 +66,7 @@ local function session_close(session)
   conn_count = conn_count - 1
   sessions[session.worker_session_id] = nil
   uv.close(session.connection)
-  uv.write(server_pipe, msgpack.pack(worker_stat()))
+  uv.write(to_server_pipe, msgpack.pack(worker_stat()))
 end
 
 local function session_transfer(session)
@@ -85,7 +85,7 @@ local function session_transfer(session)
   }
   uv.read_stop(conn)
 
-  if not uv.write2(server_pipe, msgpack.pack(trans_data), conn) then
+  if not uv.write2(to_server_pipe, msgpack.pack(trans_data), conn) then
     logger.error("failed to transfer client",
       { session_id = session.session_id, }
     )
@@ -95,7 +95,7 @@ local function session_transfer(session)
 
   session.valid = false
   sessions[session.worker_session_id] = nil
-  uv.write(server_pipe, msgpack.pack(worker_stat()))
+  uv.write(to_server_pipe, msgpack.pack(worker_stat()))
 end
 
 local function session_create(session_info, conn)
@@ -113,7 +113,7 @@ local function session_create(session_info, conn)
 
   sessions[session.worker_session_id] = session
   conn_count = conn_count + 1
-  content(session)
+  content.register_session_handlers(session)
 
   if session.on_connect then
     xpcall(
@@ -152,7 +152,7 @@ local function session_create(session_info, conn)
     end
   )
 
-  uv.write(server_pipe, msgpack.pack(worker_stat()))
+  uv.write(to_server_pipe, msgpack.pack(worker_stat()))
   return new_session
 end
 
@@ -161,15 +161,15 @@ local function on_client(err, data)
 
   if err then return end
 
-  if uv.pipe_pending_count(queue) > 0 then 
-    local pending_type = uv.pipe_pending_type(queue)
+  if uv.pipe_pending_count(from_server_pipe) > 0 then 
+    local pending_type = uv.pipe_pending_type(from_server_pipe)
 
     logger.debug("on_client pending type", pending_type)
 
     if pending_type == "tcp" then
       local conn = uv.new_tcp()
 
-      if uv.accept(queue, conn) then
+      if uv.accept(from_server_pipe, conn) then
         local from = uv.tcp_getsockname(conn)
         local to = uv.tcp_getpeername(conn)
         local new_session = session_create(msgpack.unpack(data), conn)
@@ -190,36 +190,74 @@ local function on_client(err, data)
   end
 
   if data then
-    logger.info("on_client data", msgpack.unpack(data))
+    local unpacked = msgpack.unpack(data)
+
+    logger.debug("on_client data read", unpacked)
+
+    if unpacked.type == "shutdown" then
+      logger.info("on_client received shutdown", unpacked)
+      uv.stop()
+    else
+      logger.error("on_client data not handled", unpacked)
+    end
+
     return
   end
 
-  logger.info("on_client detect end on queue")
-  uv.stop()
+  logger.info("on_client detect end on from_server_pipe")
 end
+
+local function content_error(tag, err)
+  logger.error(debug.traceback(tag, 3))
+end
+
+uv.signal_start(uv.new_signal(), "sigint",
+  function(signal)
+    logger.info("signal handler ignores signal", signal)
+  end
+)
 
 logger.info("starting new worker")
 
 repeat
   logger.debug("opening server_pipe")
 
-  if not uv.pipe_open(server_pipe, 4) then
-    logger.error("failed to open server_pipe")
+  if not uv.pipe_open(to_server_pipe, 4) then
+    logger.error("failed to open to_server_pipe")
     break
   end
   
   logger.debug("opening client acceptor")
 
-  if not uv.pipe_open(queue, 3) then
+  if not uv.pipe_open(from_server_pipe, 3) then
     logger.error("failed to open client acceptor")
     break
   end
 
+  local content_handlers = {}
+
+  content.register_content_handlers(content_handlers)
+
   logger.info("start event loop")
-  uv.read_start(queue, on_client)
+  uv.read_start(from_server_pipe, on_client)
+
+  if content_handlers.on_startup then
+    xpcall(
+      function() content_handlers.on_startup(worker_id, logger) end,
+      function(err) content_error("on_content_startup", err) end
+    )
+  end
+
   uv.run()
+
+  if content_handlers.on_shutdown then
+    xpcall(
+      function() content_handlers.on_shutdown() end,
+      function(err) content_error("on_content_shutdown", err) end
+    )
+  end
+
   logger.info("end event loop")
 until true
 
-uv.close(queue)
-uv.close(server_pipe)
+uv.loop_close()

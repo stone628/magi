@@ -161,38 +161,5 @@ function utils.pretty_string(...)
   return table.concat(arguments, "\t")
 end
 
-function utils.setTimeout(timeout, callback)
-  local timer = uv.new_timer()
-
-  uv.timer_start(timer, timeout, 0,
-    function()
-      uv.timer_stop(timer)
-      uv.close(timer)
-      callback()
-    end
-  )
-
-  return timer
-end
-
-function utils.setInterval(interval, callback)
-  local timer = uv.new_timer()
-
-  uv.timer_start(timer, interval, interval,
-    function()
-      uv.timer_stop(timer)
-      uv.close(timer)
-      callback()
-    end
-  )
-
-  return timer
-end
-
-function utils.clearInterval(timer)
-  uv.timer_stop(timer)
-  uv.close(timer)
-end
-
 return utils
 
