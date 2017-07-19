@@ -280,4 +280,5 @@ end
 logger.info("start event loop")
 uv.run()
 logger.info("done event loop")
+logger.flush()
 uv.loop_close()

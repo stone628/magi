@@ -16,17 +16,6 @@ local modes = {
 
 local levels = {}
 
-local function pretty_string(...)
-  local n = select('#', ...)
-  local arguments = { ... }
-
-  for i = 1, n do
-    arguments[i] = utils.dump(arguments[i])
-  end
-
-  return table.concat(arguments, "\t")
-end
-
 for i, v in ipairs(modes) do
   local header_color = v.color
   local upper_name = v.short
@@ -50,7 +39,9 @@ for i, v in ipairs(modes) do
 end
 
 function logger.console_sink(message)
-  uv.write(utils.stdout, message)
+  if message then
+    uv.write(utils.stdout, message)
+  end
 end
 
 local contexts = {}
@@ -120,22 +111,28 @@ function logger.new_file_sink(path, name, interval)
     end
   end
 
-
   table.insert(contexts, context)
   on_timer()
 
   return function(message)
-    if context.opening == true or context.file ~= nil then
-      -- strip ASCII color codes
-      -- following pattern cannot cover exact ASCII color codes
-      -- because of lua pattern limitation
-      local stripped = string.gsub(message, "\27%[[01][;%d]+m", "")
-
-      table.insert(context.logs, stripped)
+    if message then
+      if context.opening == true or context.file ~= nil then
+        -- strip ASCII color codes
+        -- following pattern cannot cover exact ASCII color codes
+        -- because of lua pattern limitation
+        local stripped = string.gsub(message, "\27%[[01][;%d]+m", "")
+  
+        table.insert(context.logs, stripped)
+      end
+    else
+      on_timer()
     end
   end
 end
 
 logger.sink = logger.console_sink
+logger.flush = function()
+  logger.sink(nil)
+end
 
 return logger

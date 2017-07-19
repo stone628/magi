@@ -258,6 +258,7 @@ repeat
   end
 
   logger.info("end event loop")
+  logger.flush()
 until true
 
 uv.loop_close()
