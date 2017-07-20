@@ -6,24 +6,8 @@ local config = {
   LOG_FLUSH_INTERVAL = 1000,
   
   SERVER_PORT = 50000,
+  SERVER_LOG_LEVEL = "debug",
 }
-
-uv.fs_mkdir(config.LOG_PATH, "755",
-  function(err)
-    if err then
-      local errstr = tostring(err)
-
-      if string.find(errstr, "EEXIST") ~= 1 then
-        error(
-          string.format(
-            "failed to prepare log path \"%s\", error:\"%s\"",
-            config.LOG_PATH, errstr
-          )
-        )
-      end
-    end
-  end
-)
 
 return setmetatable({},
   {

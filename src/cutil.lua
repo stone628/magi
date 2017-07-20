@@ -33,8 +33,6 @@ local function set_interval(logger, interval, callback)
 
   uv.timer_start(timer, interval, interval,
     function()
-      uv.timer_stop(timer)
-      uv.close(timer)
       xpcall(
         callback,
         function()
@@ -122,10 +120,10 @@ end
 return function(logger)
   return {
     set_timeout = function(timeout, callback)
-      set_timeout(logger, timeout, callback)
+      return set_timeout(logger, timeout, callback)
     end,
     set_interval = function(interval, callback)
-      set_interval(logger, interval, callback)
+      return set_interval(logger, interval, callback)
     end,
     clear_interval = clear_interval,
 

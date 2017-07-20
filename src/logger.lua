@@ -58,8 +58,6 @@ function logger.new_file_sink(path, name, interval)
   on_timer = function()
     local date_prefix = os.date("%y%m%d")
 
-    --print("on_timer", utils.dump(context))
-
     if context.date_prefix == date_prefix then
       if context.opening == false and context.file == nil then
         return
@@ -74,6 +72,7 @@ function logger.new_file_sink(path, name, interval)
       context.filename = string.format("%s/%s_%s%s.log",
         path, name, date_prefix, os.date("%H%M%S"))
       context.opening = true
+
       uv.fs_open(
         context.filename, "a+", tonumber("644", 8),
         function(err, fd)
@@ -112,7 +111,26 @@ function logger.new_file_sink(path, name, interval)
   end
 
   table.insert(contexts, context)
-  on_timer()
+
+  uv.fs_mkdir(path, tonumber("755", 8),
+    function(err)
+      if err then
+        local errstr = tostring(err)
+  
+        if string.find(errstr, "EEXIST") ~= 1 then
+          error(
+            string.format(
+              "failed to prepare log path \"%s\", error:\"%s\"",
+              path, errstr
+            )
+          )
+          return
+        end
+      end
+
+      on_timer()
+    end
+  )
 
   return function(message)
     if message then

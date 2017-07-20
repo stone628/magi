@@ -14,6 +14,7 @@ logger.sink = function(...)
   logger.console_sink(...)
   file_logger(...)
 end
+logger.level = config.SERVER_LOG_LEVEL
 
 local shutdown_workers = false
 local workers = {}
@@ -45,24 +46,28 @@ local function on_worker_close(worker_id, exit_status, term_signal)
 
   local worker = workers[worker_id]
 
-  if worker.pipe_to ~= nil then
+  if worker.pipe_to then
     uv.close(worker.pipe_to)
     worker.pipe_to = nil
   end
 
-  if worker.pipe_from ~= nil then
+  if worker.pipe_from then
     uv.close(worker.pipe_from)
     worker.pipe_from = nil
   end
 
+  if worker.handle then
+    uv.close(worker.handle)
+    worker.handle = nil
+  end
+
   worker.pid = nil
-  worker.handle = nil
 
   if shutdown_workers then
     local worker_count = 0
 
     for i, worker in ipairs(workers) do
-      if worker.handle ~= nil then
+      if worker.handle then
         worker_count = worker_count + 1
       end
     end
@@ -73,11 +78,8 @@ local function on_worker_close(worker_id, exit_status, term_signal)
     end
   else
     -- recover worker process
-    local timer = uv.new_timer()
-
-    uv.timer_start(timer, 1000, 0,
+    uv.timer_start(uv.new_timer(), 1000, 0,
       function()
-        uv.close(timer)
         setup_worker(uv.exepath(), worker_id)
       end
     )
@@ -103,15 +105,11 @@ local function on_worker_read(worker, err, data)
         local to = uv.tcp_getpeername(client)
         local worker = choose_worker()
   
-        logger.info("on_worker_read accepted", client, from, to)
-        logger.info("on_worker_read transferring to",
-          { worker_pid = worker.pid, worker_id = worker.id }
-        )
+        logger.debug("on_worker_read accepted", client, from, to)
+        logger.info("on_worker_read transferring to", { worker_pid = worker.pid, worker_id = worker.id })
         
         if not uv.write2(worker.pipe_to, data, client) then
-          logger.error("on_worker_read failed to send client to",
-            worker, msgpack.unpack(data)
-          )
+          logger.error("on_worker_read failed to send client to", worker, msgpack.unpack(data))
           uv.shutdown(client)
           uv.close(client)
         end 
@@ -210,13 +208,11 @@ local function new_session_info()
   }
 end
 
-logger.info("setting up workers")
-setup_workers()
-
-local server = uv.new_tcp()
-
-local function on_connect(err)
-  assert(not err, err)
+local function on_connect(server, err)
+  if err then
+    logger.error("on_connect error", err)
+    return
+  end
 
   local client = uv.new_tcp()
   local worker = choose_worker()
@@ -233,10 +229,14 @@ local function on_connect(err)
   end 
 end
 
-logger.debug("installing sigint handler")
-local sigint = uv.new_signal()
+--------------------------------------------------------------------------------
+-- server main logic
+--------------------------------------------------------------------------------
+logger.info("starting magi server, version", 0.1)
 
-uv.signal_start(sigint, "sigint",
+uuid.seed()
+
+uv.signal_start(uv.new_signal(), "sigint",
   function(signal)
     logger.info("signal handler with", signal, ", shutdown workers...")
 
@@ -247,8 +247,8 @@ uv.signal_start(sigint, "sigint",
     shutdown_workers = true
 
     for i, worker in ipairs(workers) do
-      if worker.handle ~= nil then
-        logger.debug("sending sigterm to", worker)
+      if worker.handle then
+        logger.debug("sending shutdown to", { worker_id = worker.id, worker_pid = worker.pid })
         worker.shutting_down = true
         uv.write(worker.pipe_to, shutdown_msg)
       end
@@ -256,29 +256,37 @@ uv.signal_start(sigint, "sigint",
   end
 )
 
-do
-  local t = uv.new_timer()
+logger.debug("setting up workers")
+setup_workers()
 
-  uv.timer_start(t, 0, 0,
-    function()
-      logger.debug("setting up server socket", server)
-      
-      if uv.tcp_bind(server, "0.0.0.0", config.SERVER_PORT) then
-        logger.info("server socket bound, listening...", server, uv.tcp_getsockname(server))
-        if not uv.listen(server, 128, on_connect) then
-          logger.error("failed to listen server socket", config.SERVER_PORT)
-        end
-  
-        return
-      else
-        logger.error("failed to bind server socket", config.SERVER_PORT)
+uv.timer_start(uv.new_timer(), 0, 0,
+  function()
+    logger.debug("setting up server socket")
+
+    local server = uv.new_tcp()
+    
+    if uv.tcp_bind(server, "::", config.SERVER_PORT) then
+      logger.info("server socket bound, listening...", server, uv.tcp_getsockname(server))
+
+      local result = uv.listen(server, 128,
+        function(err) on_connect(server, err) end
+      )
+
+      if not result then
+        logger.error("failed to listen server socket", config.SERVER_PORT)
       end
+
+      return
     end
-  )
-end
+
+    logger.error("failed to bind server socket", config.SERVER_PORT)
+    uv.stop()
+  end
+)
 
 logger.info("start event loop")
 uv.run()
 logger.info("done event loop")
+
 logger.flush()
 uv.loop_close()

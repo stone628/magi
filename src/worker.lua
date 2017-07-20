@@ -16,6 +16,7 @@ logger.sink = function(...)
   logger.console_sink(...)
   file_logger(...)
 end
+logger.level = config.SERVER_LOG_LEVEL
 
 local conn_count = 0
 local sessions = {}
@@ -72,6 +73,12 @@ end
 local function session_transfer(session)
   if not session.valid then return end
 
+  local conn = session.connection
+  local trans_data = {
+    session_id = session.session_id,
+    data = session.data,
+  }
+
   if session.on_transfer then
     xpcall(
       function() session.on_transfer(session) end,
@@ -79,16 +86,10 @@ local function session_transfer(session)
     )
   end
 
-  local conn = session.connection
-  local trans_data = {
-    session_id = session.session_id,
-  }
   uv.read_stop(conn)
 
   if not uv.write2(to_server_pipe, msgpack.pack(trans_data), conn) then
-    logger.error("failed to transfer client",
-      { session_id = session.session_id, }
-    )
+    logger.error("failed to transfer client", { session_id = session.session_id, })
     uv.shutdown(conn)
     uv.close(conn)
   end
@@ -109,6 +110,7 @@ local function session_create(session_info, conn)
     transfer = session_transfer,
     from = session_from,
     to = session_to,
+    data = session_info.data or {}
   }
 
   sessions[session.worker_session_id] = session
@@ -156,15 +158,15 @@ local function session_create(session_info, conn)
   return new_session
 end
 
-local function on_client(err, data)
-  logger.debug("on_client enter", { err = err, data = data })
+local function on_main_read(err, data)
+  logger.debug("on_main_read enter", { err = err, data = data })
 
   if err then return end
 
   if uv.pipe_pending_count(from_server_pipe) > 0 then 
     local pending_type = uv.pipe_pending_type(from_server_pipe)
 
-    logger.debug("on_client pending type", pending_type)
+    logger.debug("on_main_read pending type", pending_type)
 
     if pending_type == "tcp" then
       local conn = uv.new_tcp()
@@ -174,15 +176,13 @@ local function on_client(err, data)
         local to = uv.tcp_getpeername(conn)
         local new_session = session_create(msgpack.unpack(data), conn)
 
-        logger.info("on_client accepted", conn,
-          { from = from, to = to, conn_count = conn_count}
-        )
+        logger.info("on_main_read accepted", conn, { from = from, to = to, conn_count = conn_count})
       else
-        logger.error("on_client tcp accept fail", conn)
+        logger.error("on_main_read tcp accept fail", conn)
         uv.close(conn)
       end
     else
-      logger.error("on_client cannot process pending_type", pending_type)
+      logger.error("on_main_read cannot process pending_type", pending_type)
       uv.stop()
     end
 
@@ -192,32 +192,37 @@ local function on_client(err, data)
   if data then
     local unpacked = msgpack.unpack(data)
 
-    logger.debug("on_client data read", unpacked)
+    logger.debug("on_main_read data read", unpacked)
 
     if unpacked.type == "shutdown" then
-      logger.info("on_client received shutdown", unpacked)
+      logger.info("on_main_read received shutdown", unpacked)
       uv.stop()
     else
-      logger.error("on_client data not handled", unpacked)
+      logger.error("on_main_read data not handled", unpacked)
     end
 
     return
   end
 
-  logger.info("on_client detect end on from_server_pipe")
+  logger.info("on_main_read detect end on from_server_pipe")
 end
 
 local function content_error(tag, err)
   logger.error(debug.traceback(tag, 3))
 end
 
+--------------------------------------------------------------------------------
+-- worker main logic
+--------------------------------------------------------------------------------
+logger.info("starting new worker")
+
+uuid.seed()
+
 uv.signal_start(uv.new_signal(), "sigint",
   function(signal)
     logger.info("signal handler ignores signal", signal)
   end
 )
-
-logger.info("starting new worker")
 
 repeat
   logger.debug("opening server_pipe")
@@ -239,7 +244,7 @@ repeat
   content.register_content_handlers(content_handlers)
 
   logger.info("start event loop")
-  uv.read_start(from_server_pipe, on_client)
+  uv.read_start(from_server_pipe, on_main_read)
 
   if content_handlers.on_startup then
     xpcall(
@@ -258,7 +263,7 @@ repeat
   end
 
   logger.info("end event loop")
-  logger.flush()
 until true
 
+logger.flush()
 uv.loop_close()
