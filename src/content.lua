@@ -1,15 +1,43 @@
+local cutil
 local logger
 local wid
+
+local gc_timer
+
+local function collect_and_report()
+  local mem_before = string.format("%dKB", collectgarbage("count"))
+
+  collectgarbage()
+
+  local mem_after = string.format("%dKB", collectgarbage("count"))
+
+  logger.info("garbage collected", { before = mem_before, after = mem_after })
+end
+
+local last_memory = 0
+
+local function report()
+  local mem_used = collectgarbage("count")
+
+  logger.info("memory used:", { now = string.format("%dKB", mem_used), diff = string.format("%dKB", mem_used - last_memory) })
+  last_memory = mem_used
+end
 
 local function on_content_startup(worker_id, worker_logger)
   wid = worker_id
   logger = worker_logger
+  cutil = require("cutil")(logger)
 
   logger.info("on_content_startup", { worker_id = wid })
+
+  --gc_timer = cutil.set_interval(10000, collect_and_report)
+  gc_timer = cutil.set_interval(10000, report)
 end
 
 local function on_content_shutdown()
   logger.info("on_content_shutdown", { worker_id = wid })
+
+  cutil.clear_interval(gc_timer)
 end
 
 local function on_session_connect(session)
