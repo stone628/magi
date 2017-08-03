@@ -41,6 +41,17 @@ local function choose_worker()
   return workers[worker_counts[1].id]
 end
 
+local function safe_unpack(data)
+  local success, unpacked = pcall(msgpack.unpack, data)
+
+  if success then
+    return unpacked
+  end
+
+  logger.error("failed to unpack data", data)
+  return false
+end
+
 local function on_worker_close(worker_id, exit_status, term_signal)
   logger.info("on_worker_close", { worker_id = worker_id, exit_status = exit_status, term_signal = term_signal })
 
@@ -109,7 +120,7 @@ local function on_worker_read(worker, err, data)
         logger.info("on_worker_read transferring to", { worker_pid = worker.pid, worker_id = worker.id })
         
         if not uv.write2(worker.pipe_to, data, client) then
-          logger.error("on_worker_read failed to send client to", worker, msgpack.unpack(data))
+          logger.error("on_worker_read failed to send client to", worker, safe_unpack(data))
           uv.shutdown(client)
           uv.close(client)
         end 
@@ -126,14 +137,16 @@ local function on_worker_read(worker, err, data)
   end
   
   if data then
-    local unpacked = msgpack.unpack(data)
+    local unpacked = safe_unpack(data)
 
-  	logger.debug(string.format("on_worker_read[W%03d] received data", worker.id), unpacked)
-
-    if unpacked.type == "worker_stat" then
-      worker.conn_count = unpacked.conn_count
-    else
-      logger.error(string.format("on_worker_read[W%03d] type not handled:", worker.id), unpacked.type)
+    if unpacked then
+    	logger.debug(string.format("on_worker_read[W%03d] received data", worker.id), unpacked)
+  
+      if unpacked.type == "worker_stat" then
+        worker.conn_count = unpacked.conn_count
+      else
+        logger.error(string.format("on_worker_read[W%03d] type not handled:", worker.id), unpacked.type)
+      end
     end
 
     return

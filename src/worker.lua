@@ -6,7 +6,8 @@ local config = require('config')
 local logger = require('logger')
 local content = require('content')
 
-local worker_id = tonumber(arg[1])
+local args = { ... }
+local worker_id = tonumber(args[1])
 local file_logger = logger.new_file_sink(
   config.LOG_PATH, string.format("W%03d", worker_id),
   config.LOG_FLUSH_INTERVAL)
@@ -29,6 +30,22 @@ local function worker_stat()
     type = "worker_stat",
     conn_count = conn_count,
   }
+end
+
+local function safe_unpack(data)
+  local success, unpacked = pcall(msgpack.unpack, data)
+
+  if success then
+    return unpacked
+  end
+
+  logger.error(
+    debug.traceback(
+      string.format("failed to unpack data \"%s\"", data),
+      2
+    )
+  )
+  return false
 end
 
 local function session_error(session, tag, err)
@@ -174,11 +191,18 @@ local function on_main_read(err, data)
       if uv.accept(from_server_pipe, conn) then
         local from = uv.tcp_getsockname(conn)
         local to = uv.tcp_getpeername(conn)
-        local new_session = session_create(msgpack.unpack(data), conn)
+        local unpacked = safe_unpack(data)
 
-        logger.info("on_main_read accepted", conn, { from = from, to = to, conn_count = conn_count})
+        if unpacked then
+          local new_session = session_create(unpacked, conn)
+  
+          logger.info("on_main_read accepted", conn, { from = from, to = to, conn_count = conn_count})
+        else
+          logger.error("on_main_read invalid transfer request", conn, { from = from, to = to, conn_count = conn_count})
+          uv.close(conn)
+        end
       else
-        logger.error("on_main_read tcp accept fail", conn)
+        logger.error("on_main_read tcp accept fail")
         uv.close(conn)
       end
     else
@@ -190,15 +214,17 @@ local function on_main_read(err, data)
   end
 
   if data then
-    local unpacked = msgpack.unpack(data)
+    local unpacked = safe_unpack(data)
 
-    logger.debug("on_main_read data read", unpacked)
-
-    if unpacked.type == "shutdown" then
-      logger.info("on_main_read received shutdown", unpacked)
-      uv.stop()
-    else
-      logger.error("on_main_read data not handled", unpacked)
+    if unpacked then
+      logger.debug("on_main_read data read", unpacked)
+  
+      if unpacked.type == "shutdown" then
+        logger.info("on_main_read received shutdown", unpacked)
+        uv.stop()
+      else
+        logger.error("on_main_read data not handled", unpacked)
+      end
     end
 
     return
