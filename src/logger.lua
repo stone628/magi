@@ -138,7 +138,7 @@ function logger.new_file_sink(path, name, interval)
         -- strip ASCII color codes
         -- following pattern cannot cover exact ASCII color codes
         -- because of lua pattern limitation
-        local stripped = string.gsub(message, "\27%[[01][;%d]+m", "")
+        local stripped = string.gsub(message, "\027%[([0-9;]+)m", "")
   
         table.insert(context.logs, stripped)
       end
