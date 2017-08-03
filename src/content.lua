@@ -14,12 +14,19 @@ local function collect_and_report()
   logger.info("garbage collected", { before = mem_before, after = mem_after })
 end
 
+local session_count = 0
 local last_memory = 0
 
 local function report()
   local mem_used = collectgarbage("count")
 
-  logger.info("memory used:", { now = string.format("%dKB", mem_used), diff = string.format("%dKB", mem_used - last_memory) })
+  logger.info("status report:",
+    {
+      ["memory used:"] = string.format("%dKB", mem_used),
+      ["memory diff:"] = string.format("%dKB", mem_used - last_memory),
+      ["session count:"] = session_count,
+    }
+  )
   last_memory = mem_used
 end
 
@@ -31,7 +38,7 @@ local function on_content_startup(worker_id, worker_logger)
   logger.info("on_content_startup", { worker_id = wid })
 
   --gc_timer = cutil.set_interval(10000, collect_and_report)
-  gc_timer = cutil.set_interval(10000, report)
+  gc_timer = cutil.set_interval(30000, report)
 end
 
 local function on_content_shutdown()
@@ -50,6 +57,8 @@ local function on_session_connect(session)
       from.ip, from.port, to.ip, to.port
     )
   )
+
+  session_count = session_count + 1
 end
 
 local function on_session_data(session, data)
@@ -63,9 +72,11 @@ local function on_session_data(session, data)
 end
 
 local function on_session_close(session)
+  session_count = session_count - 1
 end
 
 local function on_session_transfer(session)
+  session_count = session_count - 1
 end
 
 return {

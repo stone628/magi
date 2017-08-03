@@ -8,8 +8,9 @@ local config = require('config')
 
 logger.level = "debug"
 
+local args = { ... }
 local stdin = uv.new_tty(0, true)
-local clients = {}
+local sessions = {}
 
 local function on_stdin_read(err, data)
   if err then
@@ -23,13 +24,23 @@ local function on_stdin_read(err, data)
     if i then
       local session_id = string.sub(data, 1, i - 1)
       local send_data = string.sub(data, i + 1)
-      local session = clients[session_id]
 
       logger.debug("on_stdin_read parsed", { session_id = session_id, data = send_data})
-
-      if session then
-        logger.debug("on_stdin_read sending data", { session_id = session_id, data = send_data })
-        session.send(send_data)
+  
+      if session_id == "*" then
+        for sid, session in pairs(sessions) do
+          if session then
+            logger.debug("on_stdin_read sending data", { session_id = sid, data = send_data })
+            session.send(send_data)
+          end
+        end
+      else
+        local session = sessions[session_id]
+  
+        if session then
+          logger.debug("on_stdin_read sending data", { session_id = session_id, data = send_data })
+          session.send(send_data)
+        end
       end
     end
     return
@@ -51,7 +62,7 @@ local function create_session(client)
     uv.write(new_session.connection, data)
   end
 
-  clients[new_session.session_id] = new_session
+  sessions[new_session.session_id] = new_session
   return new_session
 end
 
@@ -67,7 +78,7 @@ local function on_client_read(session, err, data)
   end
 
   logger.info("on_client_read disconnected", { session_id = session.session_id, from = session.from, to = session.to })
-  clients[session.session_id] = nil
+  sessions[session.session_id] = nil
 end
 
 local function spawn_client()
@@ -110,9 +121,20 @@ uv.signal_start(uv.new_signal(), "sigint",
   end
 )
 
-uv.timer_start(uv.new_timer(), 0, 0,
+local client_size = tonumber(args[1] or 1)
+local spawn_count = 0
+local spawn_timer = uv.new_timer()
+
+uv.timer_start(spawn_timer, 100, 100,
   function()
+    spawn_count = spawn_count + 1
+    logger.info("spawning client", spawn_count)
     spawn_client()
+
+    if spawn_count >= client_size then
+      uv.timer_stop(spawn_timer)
+      uv.close(spawn_timer)
+    end
   end
 )
 
