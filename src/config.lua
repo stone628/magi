@@ -6,7 +6,7 @@ local config = {
   LOG_FLUSH_INTERVAL = 1000,
   
   SERVER_PORT = 50000,
-  SERVER_LOG_LEVEL = "debug",
+  SERVER_LOG_LEVEL = "info",
 }
 
 return setmetatable({},

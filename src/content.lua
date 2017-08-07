@@ -37,7 +37,6 @@ local function on_content_startup(worker_id, worker_logger)
 
   logger.info("on_content_startup", { worker_id = wid })
 
-  --gc_timer = cutil.set_interval(10000, collect_and_report)
   gc_timer = cutil.set_interval(30000, report)
 end
 
@@ -47,16 +46,25 @@ local function on_content_shutdown()
   cutil.clear_interval(gc_timer)
 end
 
-local function on_session_connect(session)
+local function on_session_connect(session, transferred)
   local from = session:from()
   local to = session:to()
 
-  session:write(
-    string.format("Hello session %s:%s from %s:%d to %s:%d\n",
-      session.session_id, session.worker_session_id,
-      from.ip, from.port, to.ip, to.port
+  if transferred then
+    session:write(
+      string.format("transferred session %s:%s from %s:%d to %s:%d\n",
+        session.session_id, session.worker_session_id,
+        from.ip, from.port, to.ip, to.port
+      )
     )
-  )
+  else
+    session:write(
+      string.format("new session %s:%s from %s:%d to %s:%d\n",
+        session.session_id, session.worker_session_id,
+        from.ip, from.port, to.ip, to.port
+      )
+    )
+  end
 
   session_count = session_count + 1
 end

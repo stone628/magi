@@ -1,10 +1,10 @@
 local uv = require('luv')
-local msgpack = require('MessagePack')
 local uuid = require('uuid')
 
 local logger = require('logger')
 local config = require('config')
 local utils = require('utils')
+local sutil = require('sutil')(logger)
 
 local file_logger = logger.new_file_sink(
   config.LOG_PATH, "MAIN", config.LOG_FLUSH_INTERVAL)
@@ -39,17 +39,6 @@ local function choose_worker()
   )
 
   return workers[worker_counts[1].id]
-end
-
-local function safe_unpack(data)
-  local success, unpacked = pcall(msgpack.unpack, data)
-
-  if success then
-    return unpacked
-  end
-
-  logger.error("failed to unpack data", data)
-  return false
 end
 
 local function on_worker_close(worker_id, exit_status, term_signal)
@@ -99,56 +88,67 @@ local function on_worker_close(worker_id, exit_status, term_signal)
   end
 end
 
+local function on_worker_pipe_read(worker, type, data, raw_data)
+  if type == "worker_stat" then
+    worker.conn_count = data.conn_count
+  elseif type == "transfer" then
+    local pipe_from = worker.pipe_from
+    local transfer_success = false
+
+    if uv.pipe_pending_count(pipe_from) > 0 then
+      if uv.pipe_pending_type(pipe_from) == "tcp" then
+        local client = uv.new_tcp()
+  
+        if uv.accept(worker.pipe_from, client) then
+          local from = uv.tcp_getsockname(client)
+          local to = uv.tcp_getpeername(client)
+          local chosen_worker = choose_worker()
+
+          logger.debug(string.format("on_worker_pipe_read[W%03d] accepted", worker.id), { from = from, to = to })
+          logger.info(string.format("on_worker_pipe_read[W%03d] transferring to", worker.id),
+            { worker_pid = chosen_worker.pid, worker_id = chosen_worker.id, }
+          )
+
+          if uv.write2(chosen_worker.pipe_to, raw_data, client) then
+            return
+          end
+
+          logger.error(string.format("on_worker_pipe_read[W%03d] failed to send client to", worker.id),
+            { worker_id = chosen_worker.id, raw_data = raw_data}
+          )
+          uv.shutdown(client)
+          uv.close(client)
+          return
+        end
+
+        logger.error(string.format("on_worker_pipe_read[W%03d] tcp accept fail", worker.id), client)
+        uv.close(client)
+        return
+      end
+    end
+
+    logger.error(string.format("on_worker_pipe_read[W%03d] no pending tcp handle", worker.id))
+    uv.stop()
+  else
+    logger.error(string.format("on_worker_pipe_read[W%03d] type not handled:", worker.id), type)
+  end
+end
+
 local function on_worker_read(worker, err, data)
   if err then
   	logger.error(string.format("on_worker_read[W%03d] error", worker.id), err)
   	return
   end
 
-  if uv.pipe_pending_count(worker.pipe_from) > 0 then
-    local pending_type = uv.pipe_pending_type(worker.pipe_from)
+  if err then return end
 
-    if pending_type == "tcp" then
-      local client = uv.new_tcp()
-
-      if uv.accept(worker.pipe_from, client) then
-        local from = uv.tcp_getsockname(client)
-        local to = uv.tcp_getpeername(client)
-        local worker = choose_worker()
-  
-        logger.debug("on_worker_read accepted", client, from, to)
-        logger.info("on_worker_read transferring to", { worker_pid = worker.pid, worker_id = worker.id })
-        
-        if not uv.write2(worker.pipe_to, data, client) then
-          logger.error("on_worker_read failed to send client to", worker, safe_unpack(data))
-          uv.shutdown(client)
-          uv.close(client)
-        end 
-      else
-        logger.error(string.format("on_worker_read[W%03d] tcp accept fail", worker.id), client)
-        uv.close(client)
-      end
-    else
-      logger.error(string.format("on_worker_read[W%03d] cannot process pending_type", worker.id), pending_type)
-      uv.stop()
-    end
-
-    return
-  end
-  
   if data then
-    local unpacked = safe_unpack(data)
-
-    if unpacked then
-    	logger.debug(string.format("on_worker_read[W%03d] received data", worker.id), unpacked)
-  
-      if unpacked.type == "worker_stat" then
-        worker.conn_count = unpacked.conn_count
-      else
-        logger.error(string.format("on_worker_read[W%03d] type not handled:", worker.id), unpacked.type)
+    sutil.iterate_pipe_data(
+      data,
+      function(type, data, raw_data)
+        on_worker_pipe_read(worker, type, data, raw_data)
       end
-    end
-
+    )
     return
   end
 
@@ -191,6 +191,8 @@ function setup_worker(lua_path, worker_id)
     worker.handle = handle
     worker.pid = pid
     worker.pipe_to = pipe_to
+    -- force pipe to flush every write
+    uv.stream_set_blocking(pipe_to, true)
     worker.pipe_from = pipe_from
     uv.write(input, worker_impl)
     uv.read_start(worker.pipe_from,
@@ -198,7 +200,9 @@ function setup_worker(lua_path, worker_id)
         on_worker_read(worker, err, data)
       end
     )
-    logger.info("worker spawn success", { worker_pid = worker.pid, worker_id = worker.id, })
+    logger.info("worker spawn success",
+      { worker_pid = worker.pid, worker_id = worker.id, }
+    )
   end
 
   uv.shutdown(input)
@@ -229,13 +233,16 @@ local function on_connect(server, err)
 
   local client = uv.new_tcp()
   local worker = choose_worker()
-  local session_info = new_session_info()
+  local new_session = new_session_info()
+  local session_data = sutil.encode_pipe_data("connect", new_session)
 
   uv.accept(server, client)
 
-  logger.info("on_connect transferring to chosen worker", worker, session_info)
+  logger.info("on_connect transferring to chosen worker",
+    { worker_id = worker.id, pid = worker.pid, session_id = new_session.session_id }
+  )
 
-  if not uv.write2(worker.pipe_to, msgpack.pack(session_info), client) then
+  if not uv.write2(worker.pipe_to, session_data, client) then
     logger.error("on_connect failed to send client over pipe to", worker)
     uv.shutdown(client)
     uv.close(client)
@@ -253,9 +260,7 @@ uv.signal_start(uv.new_signal(), "sigint",
   function(signal)
     logger.info("signal handler with", signal, ", shutdown workers...")
 
-    local shutdown_msg = msgpack.pack(
-      { type = "shutdown", }
-    )
+    local shutdown_msg = sutil.encode_pipe_data("shutdown", {})
 
     shutdown_workers = true
 

@@ -11,6 +11,7 @@ logger.level = "debug"
 local args = { ... }
 local stdin = uv.new_tty(0, true)
 local sessions = {}
+local session_count = 0
 
 local function on_stdin_read(err, data)
   if err then
@@ -69,6 +70,8 @@ end
 local function on_client_read(session, err, data)
   if err then
     logger.error("on_client_read error", err, { session_id = session.session_id, from = session.from, to = session.to })
+    uv.shutdown(session.connection)
+    uv.close(session.connection)
     return
   end
 
@@ -77,8 +80,13 @@ local function on_client_read(session, err, data)
     return
   end
 
-  logger.info("on_client_read disconnected", { session_id = session.session_id, from = session.from, to = session.to })
+  session_count = session_count - 1
+  logger.info("on_client_read disconnected", { session_id = session.session_id, from = session.from, to = session.to, session_count = session_count })
   sessions[session.session_id] = nil
+
+  if session_count <= 0 then
+    uv.stop()
+  end
 end
 
 local function spawn_client()
@@ -92,7 +100,8 @@ local function spawn_client()
           function(err, data) on_client_read(session, err, data) end
         )
 
-        logger.info("client spawn", { session_id = session.session_id, from = session.from, to = session.to })
+        session_count = session_count + 1
+        logger.info("client spawn", { session_id = session.session_id, from = session.from, to = session.to, session_count = session_count })
         return
       end
 
