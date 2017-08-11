@@ -74,6 +74,9 @@ local function on_session_data(session, data)
   if string.find(data, "transfer") == 1 then
     session:write("trying transfer\n")
     session:transfer()
+  elseif string.find(data, "quit") == 1 then
+    session:write("goodbye")
+    session:close()
   else
     session:write(data)
   end

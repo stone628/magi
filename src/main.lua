@@ -116,13 +116,12 @@ local function on_worker_pipe_read(worker, type, data, raw_data)
           logger.error(string.format("on_worker_pipe_read[W%03d] failed to send client to", worker.id),
             { worker_id = chosen_worker.id, raw_data = raw_data}
           )
-          uv.shutdown(client)
+          uv.shutdown(client, function() uv.close(client) end)
+        else
+          logger.error(string.format("on_worker_pipe_read[W%03d] tcp accept fail", worker.id), client)
           uv.close(client)
-          return
         end
 
-        logger.error(string.format("on_worker_pipe_read[W%03d] tcp accept fail", worker.id), client)
-        uv.close(client)
         return
       end
     end
@@ -135,28 +134,27 @@ local function on_worker_pipe_read(worker, type, data, raw_data)
 end
 
 local function on_worker_read(worker, err, data)
-  if err then
-  	logger.error(string.format("on_worker_read[W%03d] error", worker.id), err)
-  	return
-  end
+  if not err then
+    if data then
+      sutil.iterate_pipe_data(
+        data,
+        function(type, data, raw_data)
+          on_worker_pipe_read(worker, type, data, raw_data)
+        end
+      )
+      return true
+    end
 
-  if err then return end
-
-  if data then
-    sutil.iterate_pipe_data(
-      data,
-      function(type, data, raw_data)
-        on_worker_pipe_read(worker, type, data, raw_data)
-      end
-    )
-    return
-  end
-
-  if worker.shutting_down then
-  	logger.debug(string.format("on_worker_read[W%03d] pipe closed", worker.id))
+    if worker.shutting_down then
+    	logger.debug(string.format("on_worker_read[W%03d] pipe closed", worker.id))
+    else
+    	logger.error(string.format("on_worker_read[W%03d] pipe closed", worker.id))
+    end
   else
-  	logger.error(string.format("on_worker_read[W%03d] pipe closed", worker.id))
+  	logger.error(string.format("on_worker_read[W%03d] error", worker.id), err)
   end
+
+  return false
 end
 
 function setup_worker(lua_path, worker_id)
@@ -191,13 +189,17 @@ function setup_worker(lua_path, worker_id)
     worker.handle = handle
     worker.pid = pid
     worker.pipe_to = pipe_to
-    -- force pipe to flush every write
-    uv.stream_set_blocking(pipe_to, true)
     worker.pipe_from = pipe_from
     uv.write(input, worker_impl)
-    uv.read_start(worker.pipe_from,
+    uv.read_start(pipe_from,
       function(err, data)
-        on_worker_read(worker, err, data)
+        if on_worker_read(worker, err, data) then return end
+
+        uv.read_stop(pipe_from)
+        worker.pipe_from = nil
+        worker.pipe_to = nil
+        uv.shutdown(pipe_from, function() uv.close(pipe_from) end)
+        uv.shutdown(pipe_to, function() uv.close(pipe_to) end)
       end
     )
     logger.info("worker spawn success",
@@ -244,8 +246,7 @@ local function on_connect(server, err)
 
   if not uv.write2(worker.pipe_to, session_data, client) then
     logger.error("on_connect failed to send client over pipe to", worker)
-    uv.shutdown(client)
-    uv.close(client)
+    uv.shutdown(client, function() uv.close(client) end)
   end 
 end
 
@@ -265,7 +266,7 @@ uv.signal_start(uv.new_signal(), "sigint",
     shutdown_workers = true
 
     for i, worker in ipairs(workers) do
-      if worker.handle then
+      if worker.handle and worker.pipe_to then
         logger.debug("sending shutdown to", { worker_id = worker.id, worker_pid = worker.pid })
         worker.shutting_down = true
         uv.write(worker.pipe_to, shutdown_msg)

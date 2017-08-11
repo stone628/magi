@@ -73,9 +73,13 @@ local function session_close(session)
     )
   end
 
+  local conn = session.connection
+
   conn_count = conn_count - 1
   sessions[session.worker_session_id] = nil
-  uv.close(session.connection)
+  logger.debug("disconnecting session", { session_id = session.session_id })
+  uv.read_stop(conn)
+  uv.shutdown(conn, function() uv.close(conn) end)
   uv.async_send(sync_stat)
 end
 
@@ -100,12 +104,7 @@ local function session_transfer(session)
   end
 
   uv.read_stop(conn)
-
-  if not uv.write2(to_server_pipe, trans_data, conn) then
-    logger.error("failed to transfer client", { session_id = session.session_id, })
-    uv.shutdown(conn)
-    uv.close(conn)
-  end
+  uv.write2(to_server_pipe, trans_data, conn)
 
   session.valid = false
   sessions[session.worker_session_id] = nil
@@ -234,9 +233,6 @@ repeat
     break
   end
 
-  -- force flush every write on to_server_pipe
-  uv.stream_set_blocking(to_server_pipe, true)
-  
   logger.debug("opening client acceptor")
 
   if not uv.pipe_open(from_server_pipe, 3) then
@@ -249,18 +245,24 @@ repeat
   content.register_content_handlers(content_handlers)
 
   logger.info("start event loop")
+
   uv.read_start(from_server_pipe,
     function(err, data)
       logger.debug("from_server_pipe read_start enter", { err = err, data = data })
     
-      if err then return end
-    
-      if data then
-        sutil.iterate_pipe_data(data, on_main_pipe_read)
+      if not err then
+        if data then
+          sutil.iterate_pipe_data(data, on_main_pipe_read)
+          return
+        end
+
+        logger.info("from_server_pipe read_start detect end")
+      else
         return
       end
     
-      logger.info("from_server_pipe read_start detect end")
+      uv.read_stop(from_server_pipe)
+      uv.shutdown(from_server_pipe, function() uv.close(from_server_pipe) end)
     end
   )
 

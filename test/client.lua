@@ -14,40 +14,41 @@ local sessions = {}
 local session_count = 0
 
 local function on_stdin_read(err, data)
-  if err then
-    logger.error("on_stdin_read error", err)
-    return
-  end
-
-  if data then
-    local i = string.find(data, ' ')
-
-    if i then
-      local session_id = string.sub(data, 1, i - 1)
-      local send_data = string.sub(data, i + 1)
-
-      logger.debug("on_stdin_read parsed", { session_id = session_id, data = send_data})
+  if not err then
+    if data then
+      local i = string.find(data, ' ')
   
-      if session_id == "*" then
-        for sid, session in pairs(sessions) do
+      if i then
+        local session_id = string.sub(data, 1, i - 1)
+        local send_data = string.sub(data, i + 1)
+  
+        logger.debug("on_stdin_read parsed", { session_id = session_id, data = send_data})
+    
+        if session_id == "*" then
+          for sid, session in pairs(sessions) do
+            if session then
+              logger.debug("on_stdin_read sending data", { session_id = sid, data = send_data })
+              session.send(send_data)
+            end
+          end
+        else
+          local session = sessions[session_id]
+    
           if session then
-            logger.debug("on_stdin_read sending data", { session_id = sid, data = send_data })
+            logger.debug("on_stdin_read sending data", { session_id = session_id, data = send_data })
             session.send(send_data)
           end
         end
-      else
-        local session = sessions[session_id]
-  
-        if session then
-          logger.debug("on_stdin_read sending data", { session_id = session_id, data = send_data })
-          session.send(send_data)
-        end
       end
+      return true
     end
-    return
+  
+    logger.info("on_stdin_read disconnected")
+  else
+    logger.error("on_stdin_read error", err)
   end
 
-  logger.info("on_stdin_read disconnected")
+  return false
 end
 
 local function create_session(client)
@@ -68,25 +69,18 @@ local function create_session(client)
 end
 
 local function on_client_read(session, err, data)
-  if err then
+  if not err then
+    if data then
+      logger.debug("on_client_read received", { session_id = session.session_id, data = data })
+      return true
+    end
+
+    logger.info("on_client_read disconnected", { session_id = session.session_id, from = session.from, to = session.to, session_count = session_count })
+  else
     logger.error("on_client_read error", err, { session_id = session.session_id, from = session.from, to = session.to })
-    uv.shutdown(session.connection)
-    uv.close(session.connection)
-    return
   end
 
-  if data then
-    logger.debug("on_client_read received", { session_id = session.session_id, data = data })
-    return
-  end
-
-  session_count = session_count - 1
-  logger.info("on_client_read disconnected", { session_id = session.session_id, from = session.from, to = session.to, session_count = session_count })
-  sessions[session.session_id] = nil
-
-  if session_count <= 0 then
-    uv.stop()
-  end
+  return false
 end
 
 local function spawn_client()
@@ -97,7 +91,18 @@ local function spawn_client()
         local session = create_session(client)
 
         uv.read_start(client,
-          function(err, data) on_client_read(session, err, data) end
+          function(err, data)
+            if on_client_read(session, err, data) then return end
+
+            session_count = session_count - 1
+            sessions[session.session_id] = nil
+            uv.read_stop(client)
+            uv.shutdown(client, function() uv.close(client) end)
+
+            if session_count <= 0 then
+              uv.stop()
+            end
+          end
         )
 
         session_count = session_count + 1
@@ -147,7 +152,14 @@ uv.timer_start(spawn_timer, 100, 100,
   end
 )
 
-uv.read_start(stdin, on_stdin_read)
+uv.read_start(stdin,
+  function(err, data)
+    if on_stdin_read(err, data) then return end
+
+    uv.read_stop(stdin)
+    uv.shutdown(stdin, function() uv.close(stdin) end)
+  end
+)
 
 logger.info("start event loop")
 uv.run()
