@@ -3,7 +3,6 @@ local uuid = require('uuid')
 
 local logger = require('logger')
 local config = require('config')
-local utils = require('utils')
 local sutil = require('sutil')(logger)
 
 local file_logger = logger.new_file_sink(
@@ -306,6 +305,5 @@ uv.timer_start(uv.new_timer(), 0, 0,
 logger.info("start event loop")
 uv.run()
 logger.info("done event loop")
-
-logger.flush()
+logger.shutdown()
 uv.loop_close()

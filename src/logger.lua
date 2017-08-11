@@ -1,5 +1,168 @@
 local uv = require('luv')
-local utils = require('utils')
+-- code from https://github.com/luvit/luv/blob/master/lib/utils.lua
+local utils = {}
+local usecolors
+
+local colors = {
+  black   = "0;30",
+  red     = "0;31",
+  green   = "0;32",
+  yellow  = "0;33",
+  blue    = "0;34",
+  magenta = "0;35",
+  cyan    = "0;36",
+  white   = "0;37",
+  B        = "1;",
+  Bblack   = "1;30",
+  Bred     = "1;31",
+  Bgreen   = "1;32",
+  Byellow  = "1;33",
+  Bblue    = "1;34",
+  Bmagenta = "1;35",
+  Bcyan    = "1;36",
+  Bwhite   = "1;37"
+}
+
+function utils.color(color_name)
+  if usecolors then
+    return "\27[" .. (colors[color_name] or "0") .. "m"
+  else
+    return ""
+  end
+end
+
+function utils.colorize(color_name, string, reset_name)
+  return utils.color(color_name) .. tostring(string) .. utils.color(reset_name)
+end
+
+local backslash, null, newline, carriage, tab, quote, quote2, obracket, cbracket
+
+function utils.loadColors(n)
+  if n ~= nil then usecolors = n end
+  backslash = utils.colorize("Bgreen", "\\\\", "green")
+  null      = utils.colorize("Bgreen", "\\0", "green")
+  newline   = utils.colorize("Bgreen", "\\n", "green")
+  carriage  = utils.colorize("Bgreen", "\\r", "green")
+  tab       = utils.colorize("Bgreen", "\\t", "green")
+  quote     = utils.colorize("Bgreen", '"', "green")
+  quote2    = utils.colorize("Bgreen", '"')
+  obracket  = utils.colorize("B", '[')
+  cbracket  = utils.colorize("B", ']')
+end
+
+function utils.dump(o, depth)
+  local t = type(o)
+  if t == 'string' then
+    return quote .. o:gsub("\\", backslash):gsub("%z", null):gsub("\n", newline):gsub("\r", carriage):gsub("\t", tab) .. quote2
+  end
+  if t == 'nil' then
+    return utils.colorize("Bblack", "nil")
+  end
+  if t == 'boolean' then
+    return utils.colorize("yellow", tostring(o))
+  end
+  if t == 'number' then
+    return utils.colorize("blue", tostring(o))
+  end
+  if t == 'userdata' then
+    return utils.colorize("magenta", tostring(o))
+  end
+  if t == 'thread' then
+    return utils.colorize("Bred", tostring(o))
+  end
+  if t == 'function' then
+    return utils.colorize("cyan", tostring(o))
+  end
+  if t == 'cdata' then
+    return utils.colorize("Bmagenta", tostring(o))
+  end
+  if t == 'table' then
+    if type(depth) == 'nil' then
+      depth = 0
+    end
+    if depth > 1 then
+      return utils.colorize("yellow", tostring(o))
+    end
+    local indent = ("  "):rep(depth)
+
+    -- Check to see if this is an array
+    local is_array = true
+    local i = 1
+    for k,v in pairs(o) do
+      if not (k == i) then
+        is_array = false
+      end
+      i = i + 1
+    end
+
+    local first = true
+    local lines = {}
+    i = 1
+    local estimated = 0
+    for k,v in (is_array and ipairs or pairs)(o) do
+      local s
+      if is_array then
+        s = ""
+      else
+        if type(k) == "string" and k:find("^[%a_][%a%d_]*$") then
+          s = k .. ' = '
+        else
+          s = '[' .. utils.dump(k, 100) .. '] = '
+        end
+      end
+      s = s .. utils.dump(v, depth + 1)
+      lines[i] = s
+      estimated = estimated + #s
+      i = i + 1
+    end
+    if estimated > 200 then
+      return "{\n  " .. indent .. table.concat(lines, ",\n  " .. indent) .. "\n" .. indent .. "}"
+    else
+      return "{ " .. table.concat(lines, ", ") .. " }"
+    end
+  end
+  -- This doesn't happen right?
+  return tostring(o)
+end
+
+-- A nice global data dumper
+function utils.pretty_string(...)
+  local n = select('#', ...)
+  local arguments = { ... }
+
+  for i = 1, n do
+    arguments[i] = utils.dump(arguments[i])
+  end
+
+  return table.concat(arguments, "\t")
+end
+
+function utils.initialize()
+  if utils.stdout then return end
+
+  if uv.guess_handle(1) == "tty" then
+    utils.stdout = uv.new_tty(1, false)
+    usecolors = true
+  else
+    utils.stdout = uv.new_pipe(false)
+    uv.pipe_open(utils.stdout, 1)
+    usecolors = false
+  end
+  
+  utils.loadColors()
+end
+
+function utils.write(message)
+  uv.write(utils.stdout, message)
+end
+
+function utils.finalize()
+  if utils.stdout then
+    uv.close(utils.stdout)
+    utils.stdout = nil
+  end
+end
+
 local logger = {}
 
 logger.level = "info"
@@ -40,18 +203,51 @@ end
 
 function logger.console_sink(message)
   if message then
-    uv.write(utils.stdout, message)
+    utils.initialize()
+    utils.write(message)
+  elseif message == shutdown_signal then
+    utils.finalize()
   end
 end
 
 local contexts = {}
+local shutdown_signal = {}
 local FILE_SINK_FLUSH_INTERVAL = 5000
 
 function logger.new_file_sink(path, name, interval)
   local context = {
     logs = {},
+    modified = false,
+    timer = nil,
   }
   local on_timer
+  local function clear_context()
+    if context.modified then
+      local logs = context.logs
+
+      for i, _ in ipairs(logs) do logs[i] = nil end
+      context.modified = false
+    end
+  end
+  local function flush_context()
+    if context.modified then
+      if context.file ~= nil then
+        local log_data = table.concat(context.logs)
+
+        uv.fs_write(context.file, log_data, -1,
+          function(err, chunk)
+            if err then
+              logger.error("failed to write to log file", context.filename, err)
+              uv.fs_close(context.file)
+              context.file = nil
+            end
+          end
+        )
+      end
+
+      clear_context()
+    end
+  end
 
   interval = interval or FILE_SINK_FLUSH_INTERVAL
 
@@ -59,9 +255,12 @@ function logger.new_file_sink(path, name, interval)
     local date_prefix = os.date("%y%m%d")
 
     if context.date_prefix == date_prefix then
-      if context.opening == false and context.file == nil then
+      if context.file == nil then
+        clear_context()
         return
       end
+
+      flush_context()
     else
       if context.file ~= nil then
         uv.fs_close(context.file)
@@ -71,42 +270,27 @@ function logger.new_file_sink(path, name, interval)
       context.date_prefix = date_prefix
       context.filename = string.format("%s/%s_%s%s.log",
         path, name, date_prefix, os.date("%H%M%S"))
-      context.opening = true
 
       uv.fs_open(
         context.filename, "a+", tonumber("644", 8),
         function(err, fd)
-          context.opening = false
-      
           if err then
             logger.error("failed to open log file", context.filename, err)
             context.file = nil
+            clear_context()
           else
-            local timer = uv.new_timer()
-      
             context.file = fd
-            on_timer()
-            uv.timer_start(timer, interval, interval, on_timer)
+            flush_context()
+
+            if not context.timer then
+              local timer = uv.new_timer()
+        
+              context.timer = timer
+              uv.timer_start(timer, interval, interval, on_timer)
+            end
           end
         end
       )
-    end
-
-    if table.maxn(context.logs) > 0 then
-      if context.file ~= nil then
-        local log_data = table.concat(context.logs)
-
-        -- clear accum log
-        for i in ipairs(context.logs) do context.logs[i] = nil end
-
-        uv.fs_write(context.file, log_data, -1,
-          function(err, chunk)
-            if err then
-              logger.error("failed to write to log file", context.filename, err)
-            end
-          end
-        )
-      end
     end
   end
 
@@ -133,15 +317,21 @@ function logger.new_file_sink(path, name, interval)
   )
 
   return function(message)
-    if message then
-      if context.opening == true or context.file ~= nil then
-        -- strip ASCII color codes
-        -- following pattern cannot cover exact ASCII color codes
-        -- because of lua pattern limitation
-        local stripped = string.gsub(message, "\027%[([0-9;]+)m", "")
-  
-        table.insert(context.logs, stripped)
+    if message == shutdown_signal then
+      on_timer()
+
+      if context.timer then
+        uv.timer_stop(context.timer)
+        context.timer = nil
       end
+    elseif message then
+      -- strip ASCII color codes
+      -- following pattern cannot cover exact ASCII color codes
+      -- because of lua pattern limitation
+      local stripped = string.gsub(message, "\027%[([0-9;]+)m", "")
+
+      table.insert(context.logs, stripped)
+      context.modified = true
     else
       on_timer()
     end
@@ -151,6 +341,9 @@ end
 logger.sink = logger.console_sink
 logger.flush = function()
   logger.sink(nil)
+end
+logger.shutdown = function()
+  logger.sink(shutdown_signal)
 end
 
 return logger

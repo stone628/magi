@@ -285,5 +285,5 @@ repeat
   logger.info("end event loop")
 until true
 
-logger.flush()
+logger.shutdown()
 uv.loop_close()
