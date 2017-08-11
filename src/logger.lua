@@ -1,6 +1,7 @@
 local uv = require('luv')
 -- code from https://github.com/luvit/luv/blob/master/lib/utils.lua
 local utils = {}
+local shutdown_signal = {}
 local usecolors
 
 local colors = {
@@ -202,16 +203,15 @@ for i, v in ipairs(modes) do
 end
 
 function logger.console_sink(message)
-  if message then
+  if message == shutdown_signal then
+    utils.finalize()
+  elseif message then
     utils.initialize()
     utils.write(message)
-  elseif message == shutdown_signal then
-    utils.finalize()
   end
 end
 
 local contexts = {}
-local shutdown_signal = {}
 local FILE_SINK_FLUSH_INTERVAL = 5000
 
 function logger.new_file_sink(path, name, interval)
@@ -322,6 +322,7 @@ function logger.new_file_sink(path, name, interval)
 
       if context.timer then
         uv.timer_stop(context.timer)
+        uv.close(context.timer)
         context.timer = nil
       end
     elseif message then

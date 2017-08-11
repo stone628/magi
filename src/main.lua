@@ -76,9 +76,12 @@ local function on_worker_close(worker_id, exit_status, term_signal)
       uv.stop()
     end
   else
+    local timer = uv.new_timer()
     -- recover worker process
-    uv.timer_start(uv.new_timer(), 1000, 0,
+    uv.timer_start(timer, 1000, 0,
       function()
+        uv.timer_stop(timer)
+        uv.close(timer)
         setup_worker(uv.exepath(), worker_id)
       end
     )
@@ -244,7 +247,7 @@ local function on_connect(server, err)
   )
 
   if not uv.write2(worker.pipe_to, session_data, client) then
-    logger.error("on_connect failed to send client over pipe to", worker)
+    logger.error("on_connect failed to send client over pipe to", { worker_id = worker.id, session_id = new_session.session_id })
     uv.shutdown(client, function() uv.close(client) end)
   end 
 end
@@ -277,33 +280,43 @@ uv.signal_start(uv.new_signal(), "sigint",
 logger.debug("setting up workers")
 setup_workers()
 
-uv.timer_start(uv.new_timer(), 0, 0,
-  function()
-    logger.debug("setting up server socket")
-
-    local server = uv.new_tcp()
-    
-    if uv.tcp_bind(server, "::", config.SERVER_PORT) then
-      logger.info("server socket bound, listening...", server, uv.tcp_getsockname(server))
-
-      local result = uv.listen(server, 128,
-        function(err) on_connect(server, err) end
-      )
-
-      if not result then
-        logger.error("failed to listen server socket", config.SERVER_PORT)
+do
+  local timer = uv.new_timer()
+  
+  uv.timer_start(uv.new_timer(), 0, 0,
+    function()
+      logger.debug("setting up server socket")
+      uv.timer_stop(timer)
+      uv.close(timer)
+  
+      local server = uv.new_tcp()
+      
+      if uv.tcp_bind(server, "::", config.SERVER_PORT) then
+        logger.info("server socket bound, listening...", server, uv.tcp_getsockname(server))
+  
+        local result = uv.listen(server, 128,
+          function(err) on_connect(server, err) end
+        )
+  
+        if not result then
+          logger.error("failed to listen server socket", config.SERVER_PORT)
+        end
+  
+        return
       end
-
-      return
+  
+      logger.error("failed to bind server socket", config.SERVER_PORT)
+      uv.stop()
     end
-
-    logger.error("failed to bind server socket", config.SERVER_PORT)
-    uv.stop()
-  end
-)
-
+  )
+end
+  
 logger.info("start event loop")
 uv.run()
 logger.info("done event loop")
+
+-- finalize
 logger.shutdown()
+
+uv.run("once")
 uv.loop_close()

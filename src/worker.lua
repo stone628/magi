@@ -104,9 +104,14 @@ local function session_transfer(session)
   end
 
   uv.read_stop(conn)
-  uv.write2(to_server_pipe, trans_data, conn)
+ 
+  if not uv.write2(to_server_pipe, trans_data, conn) then
+    logger.error("failed to transfer client to main", { session_id = session.session_id, data = session.data })
+    uv.shutdown(conn, function() uv.close(conn) end)
+  end
 
   session.valid = false
+  conn_count = conn_count - 1
   sessions[session.worker_session_id] = nil
   uv.async_send(sync_stat)
 end
@@ -286,4 +291,6 @@ repeat
 until true
 
 logger.shutdown()
+
+uv.run("once")
 uv.loop_close()
