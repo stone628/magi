@@ -54,7 +54,13 @@ end
 function utils.dump(o, depth)
   local t = type(o)
   if t == 'string' then
-    return quote .. o:gsub("\\", backslash):gsub("%z", null):gsub("\n", newline):gsub("\r", carriage):gsub("\t", tab) .. quote2
+    return quote
+      .. o:gsub("\\", backslash)
+      :gsub("%z", null)
+      :gsub("\n", newline)
+      :gsub("\r", carriage)
+      :gsub("\t", tab)
+      .. quote2
   end
   if t == 'nil' then
     return utils.colorize("Bblack", "nil")
@@ -149,7 +155,7 @@ function utils.initialize()
     uv.pipe_open(utils.stdout, 1)
     usecolors = false
   end
-  
+
   utils.loadColors()
 end
 
@@ -168,6 +174,7 @@ local logger = {}
 
 logger.level = "info"
 logger.prefix = ""
+logger.path_modifier = function(path) return path end
 
 local modes = {
   { name = "trace", color = "blue", short = "TRACE", },
@@ -179,6 +186,18 @@ local modes = {
 }
 
 local levels = {}
+local lc
+local function logger_checker(level)
+  return logger.sink == nil or level < levels[logger.level]
+end
+
+local function logger_checker_first(level)
+  utils.initialize()
+  lc = logger_checker
+  return lc(level)
+end
+
+lc = logger_checker_first
 
 for i, v in ipairs(modes) do
   local header_color = v.color
@@ -186,7 +205,7 @@ for i, v in ipairs(modes) do
 
   levels[v.name] = i
   logger[v.name] = function(msg, ...)
-    if logger.sink == nil or i < levels[logger.level] then return end
+    if lc(i) then return end
 
     local rest_msg = utils.pretty_string(...)
     local info = debug.getinfo(2, "Sl")
@@ -195,7 +214,8 @@ for i, v in ipairs(modes) do
       utils.colorize(header_color,
         string.format("[%s %s %s@%s:%s]%s",
           upper_name, os.date("%H:%M:%S"), logger.prefix,
-          info.short_src, info.currentline, msg
+          logger.path_modifier(info.short_src), info.currentline,
+          msg
         )
       ) .. string.format("\t%s\n", rest_msg)
     )
@@ -205,8 +225,8 @@ end
 function logger.console_sink(message)
   if message == shutdown_signal then
     utils.finalize()
+    lc = logger_checker_first
   elseif message then
-    utils.initialize()
     utils.write(message)
   end
 end
@@ -284,7 +304,7 @@ function logger.new_file_sink(path, name, interval)
 
             if not context.timer then
               local timer = uv.new_timer()
-        
+
               context.timer = timer
               uv.timer_start(timer, interval, interval, on_timer)
             end
@@ -300,7 +320,7 @@ function logger.new_file_sink(path, name, interval)
     function(err)
       if err then
         local errstr = tostring(err)
-  
+
         if string.find(errstr, "EEXIST") ~= 1 then
           error(
             string.format(
@@ -348,3 +368,4 @@ logger.shutdown = function()
 end
 
 return logger
+

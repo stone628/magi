@@ -1,25 +1,16 @@
 local uv = require('luv')
 local uuid = require('uuid')
+local logger = require('magi.logger')
+local sutil = require('magi.sutil')(logger)
 
-local logger = require('logger')
-local config = require('config')
-local sutil = require('sutil')(logger)
-
-local file_logger = logger.new_file_sink(
-  config.LOG_PATH, "MAIN", config.LOG_FLUSH_INTERVAL)
-
-logger.prefix = "MAIN"
-logger.sink = function(...)
-  logger.console_sink(...)
-  file_logger(...)
-end
-logger.level = config.SERVER_LOG_LEVEL
+local runner_path = { ... }
 
 local shutdown_workers = false
 local workers = {}
-
-local worker_impl = string.dump(loadfile("worker.lua"))
+local worker_impl = string.dump(require('magi.worker'))
 local setup_worker
+
+logger.prefix = "MAIN"
 
 local function choose_worker()
   local worker_counts = {}
@@ -41,7 +32,12 @@ local function choose_worker()
 end
 
 local function on_worker_close(worker_id, exit_status, term_signal)
-  logger.info("on_worker_close", { worker_id = worker_id, exit_status = exit_status, term_signal = term_signal })
+  logger.info("on_worker_close",
+    {
+      worker_id = worker_id, exit_status = exit_status,
+      term_signal = term_signal
+    }
+  )
 
   local worker = workers[worker_id]
 
@@ -100,14 +96,18 @@ local function on_worker_pipe_read(worker, type, data, raw_data)
     if uv.pipe_pending_count(pipe_from) > 0 then
       if uv.pipe_pending_type(pipe_from) == "tcp" then
         local client = uv.new_tcp()
-  
+
         if uv.accept(worker.pipe_from, client) then
           local from = uv.tcp_getsockname(client)
           local to = uv.tcp_getpeername(client)
           local chosen_worker = choose_worker()
 
-          logger.debug(string.format("on_worker_pipe_read[W%03d] accepted", worker.id), { from = from, to = to })
-          logger.info(string.format("on_worker_pipe_read[W%03d] transferring to", worker.id),
+          logger.debug(
+            string.format("on_worker_pipe_read[W%03d] accepted", worker.id),
+            { from = from, to = to }
+          )
+          logger.info(
+            string.format("on_worker_pipe_read[W%03d] transferring to", worker.id),
             { worker_pid = chosen_worker.pid, worker_id = chosen_worker.id, }
           )
 
@@ -115,12 +115,16 @@ local function on_worker_pipe_read(worker, type, data, raw_data)
             return
           end
 
-          logger.error(string.format("on_worker_pipe_read[W%03d] failed to send client to", worker.id),
+          logger.error(
+            string.format("on_worker_pipe_read[W%03d] failed to send client to", worker.id),
             { worker_id = chosen_worker.id, raw_data = raw_data}
           )
           uv.shutdown(client, function() uv.close(client) end)
         else
-          logger.error(string.format("on_worker_pipe_read[W%03d] tcp accept fail", worker.id), client)
+          logger.error(
+            string.format("on_worker_pipe_read[W%03d] tcp accept fail", worker.id),
+            client
+          )
           uv.close(client)
         end
 
@@ -128,10 +132,15 @@ local function on_worker_pipe_read(worker, type, data, raw_data)
       end
     end
 
-    logger.error(string.format("on_worker_pipe_read[W%03d] no pending tcp handle", worker.id))
+    logger.error(
+      string.format("on_worker_pipe_read[W%03d] no pending tcp handle", worker.id)
+    )
     uv.stop()
   else
-    logger.error(string.format("on_worker_pipe_read[W%03d] type not handled:", worker.id), type)
+    logger.error(
+      string.format("on_worker_pipe_read[W%03d] type not handled:", worker.id),
+      type
+    )
   end
 end
 
@@ -159,14 +168,14 @@ local function on_worker_read(worker, err, data)
   return false
 end
 
-function setup_worker(lua_path, worker_id)
+function setup_worker(lua_path, worker_id, content_path)
   local pipe_to = uv.new_pipe(true)
   local pipe_from = uv.new_pipe(true)
   local input = uv.new_pipe(false)
   local handle, pid = uv.spawn(
     lua_path,
     {
-      args = { "-", worker_id, "option2", },
+      args = { "-", worker_id, content_path, },
       stdio = { input, 1, 2, pipe_to, pipe_from },
       env = { string.format("WORKER_ID=%d", worker_id) },
     }, 
@@ -212,14 +221,14 @@ function setup_worker(lua_path, worker_id)
   uv.shutdown(input)
 end
 
-local function setup_workers()
+local function setup_workers(config, content_path)
   local lua_path = uv.exepath()
-  local cpu_info = uv.cpu_info()
 
-  logger.debug("lua_path", lua_path)
+  logger.debug("setting up workers, lua_path:", lua_path,
+      "worker_count:", config.SERVER_WORKER_COUNT)
 
-  for i = 1, #cpu_info do
-    setup_worker(lua_path, i)
+  for i = 1, config.SERVER_WORKER_COUNT do
+    setup_worker(lua_path, i, content_path)
   end
 end
 
@@ -247,76 +256,104 @@ local function on_connect(server, err)
   )
 
   if not uv.write2(worker.pipe_to, session_data, client) then
-    logger.error("on_connect failed to send client over pipe to", { worker_id = worker.id, session_id = new_session.session_id })
+    logger.error("on_connect failed to send client over pipe to",
+      { worker_id = worker.id, session_id = new_session.session_id }
+    )
+
     uv.shutdown(client, function() uv.close(client) end)
-  end 
+  end
 end
 
---------------------------------------------------------------------------------
--- server main logic
---------------------------------------------------------------------------------
-logger.info("starting magi server, version", 0.1)
+local function main(config, content_path)
+  local file_logger = logger.new_file_sink(
+    config.LOG_PATH, logger.prefix, config.LOG_FLUSH_INTERVAL)
 
-uuid.seed()
+  logger.level = config.SERVER_LOG_LEVEL
+  logger.sink = function(...)
+    logger.console_sink(...)
+    file_logger(...)
+  end
 
-uv.signal_start(uv.new_signal(), "sigint",
-  function(signal)
-    logger.info("signal handler with", signal, ", shutdown workers...")
+  logger.info("starting magi server, version", config.VERSION)
 
-    local shutdown_msg = sutil.encode_pipe_data("shutdown", {})
+  uuid.seed()
 
-    shutdown_workers = true
+  uv.signal_start(uv.new_signal(), "sigint",
+    function(signal)
+      local shutdown_msg = sutil.encode_pipe_data("shutdown", {})
 
-    for i, worker in ipairs(workers) do
-      if worker.handle and worker.pipe_to then
-        logger.debug("sending shutdown to", { worker_id = worker.id, worker_pid = worker.pid })
-        worker.shutting_down = true
-        uv.write(worker.pipe_to, shutdown_msg)
+      logger.info("signal handler with", signal, ", shutdown workers...")
+
+      shutdown_workers = true
+
+      for i, worker in ipairs(workers) do
+        if worker.handle and worker.pipe_to then
+          logger.debug("sending shutdown to",
+            { worker_id = worker.id, worker_pid = worker.pid }
+          )
+          worker.shutting_down = true
+          uv.write(worker.pipe_to, shutdown_msg)
+        end
       end
     end
-  end
-)
+  )
 
-logger.debug("setting up workers")
-setup_workers()
+  setup_workers(config, content_path)
 
-do
-  local timer = uv.new_timer()
-  
   uv.timer_start(uv.new_timer(), 0, 0,
     function()
-      logger.debug("setting up server socket")
-      uv.timer_stop(timer)
-      uv.close(timer)
-  
       local server = uv.new_tcp()
-      
+
+      logger.debug("setting up server socket")
+
       if uv.tcp_bind(server, "::", config.SERVER_PORT) then
         logger.info("server socket bound, listening...", server, uv.tcp_getsockname(server))
-  
+
         local result = uv.listen(server, 128,
           function(err) on_connect(server, err) end
         )
-  
+
         if not result then
           logger.error("failed to listen server socket", config.SERVER_PORT)
         end
-  
+
         return
       end
-  
+
       logger.error("failed to bind server socket", config.SERVER_PORT)
       uv.stop()
     end
   )
+
+  logger.info("start event loop")
+  uv.run()
+  logger.info("done event loop")
+
+  -- finalize
+  logger.shutdown()
+  uv.run("once")
+  uv.loop_close()
+  return 0
 end
-  
-logger.info("start event loop")
-uv.run()
-logger.info("done event loop")
 
--- finalize
-logger.shutdown()
+return setmetatable(
+  {},
+  {
+    __call = function(_, content_path)
+      local valid, config = pcall(
+        function()
+          return require('magi.config')(require('magi_config'), logger)
+        end
+      )
 
-uv.run("once")
-uv.loop_close()
+      if not valid then
+        logger.error("magi runner startup failed", config)
+        return 1
+      end
+
+      if not config then return 2 end
+
+      return main(config, content_path)
+    end
+  }
+)

@@ -2,9 +2,11 @@ package.path = '../src/?.lua;' .. package.path
 
 local uv = require('luv')
 local uuid = require('uuid')
+local config = {
+  SERVER_PORT = 50000,
+}
 
-local logger = require('logger')
-local config = require('config')
+local logger = require('magi.logger')
 
 logger.level = "debug"
 
@@ -17,32 +19,44 @@ local function on_stdin_read(err, data)
   if not err then
     if data then
       local i = string.find(data, ' ')
-  
+      local valid_line = true
+
       if i then
         local session_id = string.sub(data, 1, i - 1)
         local send_data = string.sub(data, i + 1)
-  
+
         logger.debug("on_stdin_read parsed", { session_id = session_id, data = send_data})
-    
+
         if session_id == "*" then
           for sid, session in pairs(sessions) do
             if session then
               logger.debug("on_stdin_read sending data", { session_id = sid, data = send_data })
               session.send(send_data)
+            else
+              valid_line = false
             end
           end
         else
           local session = sessions[session_id]
-    
+
           if session then
             logger.debug("on_stdin_read sending data", { session_id = session_id, data = send_data })
             session.send(send_data)
+          else
+            valid_line = false
           end
         end
+      else
+        valid_line = false
       end
+
+      if not valid_line then
+        logger.error("invalid input. [SESSION_ID or *] MESSAGE")
+      end
+
       return true
     end
-  
+
     logger.info("on_stdin_read disconnected")
   else
     logger.error("on_stdin_read error", err)
@@ -157,12 +171,16 @@ uv.read_start(stdin,
     if on_stdin_read(err, data) then return end
 
     uv.read_stop(stdin)
-    uv.shutdown(stdin, function() uv.close(stdin) end)
+    uv.stop()
   end
 )
 
 logger.info("start event loop")
 uv.run()
 logger.info("done event loop")
-logger.flush()
+
+--finalize
+logger.shutdown()
+uv.run("once")
 uv.loop_close()
+return 0

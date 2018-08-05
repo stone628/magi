@@ -20,12 +20,9 @@ local last_memory = 0
 local function report()
   local mem_used = collectgarbage("count")
 
-  logger.info("status report:",
-    {
-      ["memory used:"] = string.format("%dKB", mem_used),
-      ["memory diff:"] = string.format("%dKB", mem_used - last_memory),
-      ["session count:"] = session_count,
-    }
+  logger.info(
+    string.format("memory used(%dKB) diff(%dKB) sessions(%d)",
+      mem_used, mem_used - last_memory, session_count)
   )
   last_memory = mem_used
 end
@@ -33,7 +30,7 @@ end
 local function on_content_startup(worker_id, worker_logger)
   wid = worker_id
   logger = worker_logger
-  cutil = require("cutil")(logger)
+  cutil = require("magi.cutil")(logger)
 
   logger.info("on_content_startup", { worker_id = wid })
 
@@ -89,16 +86,12 @@ end
 local function on_session_transfer(session)
   session_count = session_count - 1
 end
-
 return {
-  register_content_handlers = function(content)
-    content.on_startup = on_content_startup
-    content.on_shutdown = on_content_shutdown
-  end,
-  register_session_handlers = function(session)
-    session.on_connect = on_session_connect
-    session.on_data = on_session_data
-    session.on_close = on_session_close
-    session.on_transfer = on_session_transfer
-  end,
+  on_startup = on_content_startup,
+  on_shutdown = on_content_shutdown,
+
+  on_connect = on_session_connect,
+  on_data = on_session_data,
+  on_close = on_session_close,
+  on_transfer = on_session_transfer,
 }

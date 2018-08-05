@@ -54,11 +54,16 @@ local function _iterate_pipe_data(logger, data, pred)
             string.format("%s: failed to unpack data", unpacked),
             2
           ),
-          { raw_data = data, packed_start = data_pos + 1, packed_len = packed_len, packed_data = packed_data, }
+          {
+            raw_data = data,
+            packed_start = data_pos + 1,
+            packed_len = packed_len,
+            packed_data = packed_data,
+          }
         )
         return false
       end
-      
+
       data_pos = data_pos + packed_len + 1
       pred(
         unpacked.k, unpacked.d,
@@ -67,9 +72,7 @@ local function _iterate_pipe_data(logger, data, pred)
       iter_start = data_pos
       packed_len = 0
 
-      if data_pos > data_len then
-        return true
-      end
+      if data_pos > data_len then return true end
     else
       packed_len = packed_len * 0x80 + d
       data_pos = data_pos + 1
@@ -77,13 +80,18 @@ local function _iterate_pipe_data(logger, data, pred)
   end
 end
 
-return function(logger)
-  return {
-    encode_pipe_data = function(type, data)
-      return _encode_pipe_data(logger, type, data)
-    end,
-    iterate_pipe_data = function(data, pred)
-      return _iterate_pipe_data(logger, data, pred)
-    end,
+return setmetatable(
+  {},
+  {
+    __call = function(_, logger)
+      return {
+        encode_pipe_data = function(type, data)
+          return _encode_pipe_data(logger, type, data)
+        end,
+        iterate_pipe_data = function(data, pred)
+          return _iterate_pipe_data(logger, data, pred)
+        end,
+      }
+    end
   }
-end
+)

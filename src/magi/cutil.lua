@@ -68,29 +68,27 @@ local function init_cor(logger)
   cor_task_serial = 0
   uv.idle_start(cor_idle,
     function()
-      
       for i, task in ipairs(cor_tasks) do
         if coroutine.status(task.co) == "dead" then
-          
         end
-      end     
+      end
     end
   )
 end
 
 local function cor_start(logger, func, ...)
-  init_cor(logger) 
+  init_cor(logger)
   cor_task_serial = cor_task_serial + 1
 
   local task = {
     id = cor_task_serial,
     co = coroutine.create(func),
     yielded = nil,
-  } 
+  }
 
   table.insert(cor_tasks, task)
   cor_to_task[task.co] = task
-  
+
   local result, returned = coroutine.resume(task.co, ...)
 
   if result then
