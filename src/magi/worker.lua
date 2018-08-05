@@ -214,9 +214,10 @@ return function(...)
     end
   end
 
-  local function main(config, content)
+  local function main(config, content, content_path)
     local file_logger = logger.new_file_sink(
-      config.LOG_PATH, logger.prefix, config.LOG_FLUSH_INTERVAL)
+      content_path .. config.LOG_PATH, logger.prefix,
+      config.LOG_FLUSH_INTERVAL)
 
     logger.level = config.SERVER_LOG_LEVEL
     logger.sink = function(...)
@@ -325,6 +326,6 @@ return function(...)
 
   if not content then return 3 end
 
-  return main(config, content)
+  return main(config, content, content_path)
 end
 
